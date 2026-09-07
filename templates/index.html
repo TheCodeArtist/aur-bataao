@@ -47,7 +47,6 @@
         data-title="{{ task.title|lower }}"
         data-overdue="{{ 'true' if task.overdue else 'false' }}"
         data-stalled="{{ 'true' if task.stalled else 'false' }}"
-        style="--depth: {{ task.depth }}"
       >
         <div class="task-main">
           <button class="icon toggle-details" type="button" aria-expanded="false" aria-label="Show task details">›</button>
@@ -115,25 +114,66 @@
                 <button type="submit">Add label</button>
               </form>
 
-              <div class="section-label">Dependencies</div>
-              <ul class="compact-list dependency-list">
-                {% for dep in task.blocked_by %}
-                <li class="{% if dep.resolved %}resolved{% endif %}">
-                  Blocked by “{{ dep.title }}”{% if dep.resolved %} (done){% endif %}
-                  <button type="button" class="link-button remove-dependency" data-blocker-id="{{ dep.id }}">remove</button>
-                </li>
-                {% else %}<li class="muted empty-note">No blockers</li>{% endfor %}
-                {% for dep in task.blocks %}<li>Blocks “{{ dep.title }}”</li>{% endfor %}
-              </ul>
-              <form class="inline-form add-dependency-form">
-                <select name="blocker_task_id" aria-label="Choose blocker">
-                  <option value="">Add blocker…</option>
-                  {% for choice in task_choices %}
-                    {% if choice.id != task.id %}<option value="{{ choice.id }}">{{ choice.title }}</option>{% endif %}
-                  {% endfor %}
-                </select>
-                <button type="submit">Add</button>
-              </form>
+              <div class="section-label">Relationships</div>
+              {% set blocker_ids = task.blocked_by|map(attribute='id')|list %}
+              {% set blocked_ids = task.blocks|map(attribute='id')|list %}
+              <div class="relationship-group">
+                <div class="relationship-heading">Blocked by</div>
+                <ul class="compact-list relationship-list">
+                  {% for dep in task.blocked_by %}
+                  <li class="{% if dep.resolved %}resolved{% endif %}">
+                    <span>“{{ dep.title }}” <span class="relationship-status">{{ status_labels[dep.status] }}</span></span>
+                    <button
+                      type="button"
+                      class="link-button remove-relationship"
+                      data-blocked-task-id="{{ task.id }}"
+                      data-blocker-task-id="{{ dep.id }}"
+                      aria-label="Remove blocker {{ dep.title }}"
+                    >Remove</button>
+                  </li>
+                  {% else %}<li class="muted empty-note">No blockers</li>{% endfor %}
+                </ul>
+                <form class="inline-form add-blocker-form">
+                  <select name="blocker_task_id" aria-label="Add a task that blocks {{ task.title }}" required>
+                    <option value="">Add blocker…</option>
+                    {% for choice in task_choices %}
+                      {% if choice.id != task.id and choice.id not in blocker_ids %}<option value="{{ choice.id }}">{{ choice.title }} — {{ status_labels[choice.status] }}</option>{% endif %}
+                    {% endfor %}
+                  </select>
+                  <button type="submit">Add</button>
+                </form>
+                <form class="inline-form create-blocker-form">
+                  <input name="title" maxlength="200" placeholder="Create new blocker…" aria-label="Title for a new task that blocks {{ task.title }}" required>
+                  <button type="submit">Create</button>
+                </form>
+              </div>
+
+              <div class="relationship-group">
+                <div class="relationship-heading">Blocks</div>
+                <ul class="compact-list relationship-list">
+                  {% for dep in task.blocks %}
+                  <li>
+                    <span>“{{ dep.title }}” <span class="relationship-status">{{ status_labels[dep.status] }}</span></span>
+                    <button
+                      type="button"
+                      class="link-button remove-relationship"
+                      data-blocked-task-id="{{ dep.id }}"
+                      data-blocker-task-id="{{ task.id }}"
+                      aria-label="Stop blocking {{ dep.title }}"
+                    >Remove</button>
+                  </li>
+                  {% else %}<li class="muted empty-note">Blocks no tasks</li>{% endfor %}
+                </ul>
+                <form class="inline-form add-blocked-task-form">
+                  <select name="blocked_task_id" aria-label="Add a task blocked by {{ task.title }}" required>
+                    <option value="">Add blocked task…</option>
+                    {% for choice in task_choices %}
+                      {% if choice.id != task.id and choice.id not in blocked_ids %}<option value="{{ choice.id }}">{{ choice.title }} — {{ status_labels[choice.status] }}</option>{% endif %}
+                    {% endfor %}
+                  </select>
+                  <button type="submit">Add</button>
+                </form>
+              </div>
             </section>
 
             <section>
@@ -151,11 +191,6 @@
                 {% else %}<li class="muted empty-note">No comments</li>{% endfor %}
               </ul>
 
-              <div class="section-label">Subtask</div>
-              <form class="inline-form add-subtask-form">
-                <input name="title" maxlength="200" placeholder="Add subtask…" required>
-                <button type="submit">Add</button>
-              </form>
             </section>
           </div>
         </div>

@@ -14,7 +14,13 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from flask import Flask, current_app, g, jsonify, render_template, request, send_file
 
 
-STATUSES = {"todo", "in_progress", "blocked", "done"}
+STATUS_LABELS = {
+    "todo": "To do",
+    "in_progress": "In progress",
+    "blocked": "Blocked",
+    "done": "Done",
+}
+STATUSES = set(STATUS_LABELS)
 MAX_RECONCILE_AGE_SECONDS = 60
 PREVIEWABLE_IMAGE_TYPES = {"image/gif", "image/jpeg", "image/png", "image/webp"}
 
@@ -75,8 +81,39 @@ def close_db(_: BaseException | None = None) -> None:
 
 def init_db() -> None:
     schema = Path(current_app.root_path, "schema.sql").read_text(encoding="utf-8")
-    get_db().executescript(schema)
-    get_db().commit()
+    db = get_db()
+    db.executescript(schema)
+    migrate_legacy_subtasks(db)
+    db.commit()
+
+
+def migrate_legacy_subtasks(db: sqlite3.Connection) -> int:
+    """Convert the former parent/child hierarchy into blocking relationships."""
+    legacy_links = db.execute(
+        "SELECT id, parent_task_id FROM tasks WHERE parent_task_id IS NOT NULL"
+    ).fetchall()
+    migrated = 0
+    now = utc_now()
+    for task in legacy_links:
+        cursor = db.execute(
+            """
+            INSERT OR IGNORE INTO task_dependencies(blocked_task_id, blocker_task_id)
+            VALUES (?, ?)
+            """,
+            (task["parent_task_id"], task["id"]),
+        )
+        if cursor.rowcount:
+            migrated += 1
+            _record_event(
+                db,
+                task["parent_task_id"],
+                "dependency_added",
+                details={"blocker_task_id": task["id"], "migrated_from": "subtask"},
+                now=now,
+            )
+    if legacy_links:
+        db.execute("UPDATE tasks SET parent_task_id = NULL WHERE parent_task_id IS NOT NULL")
+    return migrated
 
 
 def utc_now() -> datetime:
@@ -404,27 +441,11 @@ def load_tasks() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         """
     ).fetchall()
     items = [_serialize_task(db, row) for row in rows]
-    by_parent: dict[int | None, list[dict[str, Any]]] = {}
-    for item in items:
-        by_parent.setdefault(item["parent_task_id"], []).append(item)
-
-    ordered: list[dict[str, Any]] = []
-
-    def visit(parent_id: int | None, depth: int) -> None:
-        for item in by_parent.get(parent_id, []):
-            item["depth"] = depth
-            ordered.append(item)
-            visit(item["id"], depth + 1)
-
-    visit(None, 0)
-    # Keep malformed/orphaned rows visible if foreign-key checks were ever bypassed.
-    seen = {item["id"] for item in ordered}
-    for item in items:
-        if item["id"] not in seen:
-            item["depth"] = 0
-            ordered.append(item)
-    choices = [{"id": item["id"], "title": item["title"]} for item in items]
-    return ordered, choices
+    choices = [
+        {"id": item["id"], "title": item["title"], "status": item["status"]}
+        for item in items
+    ]
+    return items, choices
 
 
 def _json_body() -> dict[str, Any]:
@@ -484,7 +505,7 @@ def register_routes(app: Flask) -> None:
             "index.html",
             tasks=tasks,
             task_choices=choices,
-            statuses=("todo", "in_progress", "blocked", "done"),
+            status_labels=STATUS_LABELS,
             timezone_name=current_app.config["USER_TIMEZONE"],
             today=datetime.now(current_app.config["TZINFO"]).date().isoformat(),
             max_attachment_bytes=current_app.config["MAX_ATTACHMENT_BYTES"],
@@ -500,27 +521,44 @@ def register_routes(app: Flask) -> None:
         title = str(body.get("title", "")).strip()
         if not title or len(title) > 200:
             raise ValueError("Title must be between 1 and 200 characters")
-        parent_id = body.get("parent_task_id")
-        if parent_id is not None:
+        if "parent_task_id" in body:
+            raise ValueError("Subtasks are no longer supported; create a blocking task instead")
+        blocks_task_id = body.get("blocks_task_id")
+        if blocks_task_id is not None:
             try:
-                parent_id = int(parent_id)
+                blocks_task_id = int(blocks_task_id)
             except (TypeError, ValueError) as exc:
-                raise ValueError("Invalid parent task") from exc
+                raise ValueError("Invalid blocked task") from exc
         db = get_db()
-        if parent_id is not None:
-            _task_or_404(db, parent_id)
+        if blocks_task_id is not None:
+            _task_or_404(db, blocks_task_id)
         now = utc_now()
         stored_paths: list[Path] = []
         try:
             cursor = db.execute(
                 """
-                INSERT INTO tasks(parent_task_id, title, created_at, updated_at)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO tasks(title, created_at, updated_at)
+                VALUES (?, ?, ?)
                 """,
-                (parent_id, title, iso_utc(now), iso_utc(now)),
+                (title, iso_utc(now), iso_utc(now)),
             )
             task_id = cursor.lastrowid
             _record_event(db, task_id, "task_created", details={"status": "todo"}, now=now)
+            if blocks_task_id is not None:
+                db.execute(
+                    """
+                    INSERT INTO task_dependencies(blocked_task_id, blocker_task_id)
+                    VALUES (?, ?)
+                    """,
+                    (blocks_task_id, task_id),
+                )
+                _record_event(
+                    db,
+                    blocks_task_id,
+                    "dependency_added",
+                    details={"blocker_task_id": task_id},
+                    now=now,
+                )
             stored_paths = _save_attachments(db, task_id, uploads, now)
             db.commit()
         except Exception:

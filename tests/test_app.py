@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from app import create_app, get_db, reconcile_active_labels
+from app import create_app, get_db, init_db, reconcile_active_labels
 
 
 @pytest.fixture()
@@ -23,25 +23,87 @@ def client(app):
     return app.test_client()
 
 
-def create_task(client, title, parent_task_id=None):
-    payload = {"title": title}
-    if parent_task_id is not None:
-        payload["parent_task_id"] = parent_task_id
-    response = client.post("/api/tasks", json=payload)
+def create_task(client, title):
+    response = client.post("/api/tasks", json={"title": title})
     assert response.status_code == 201
     return response.get_json()["task"]
 
 
-def test_task_subtask_and_progress_label(client):
-    parent = create_task(client, "Ship compact MVP")
-    child = create_task(client, "Write tests", parent["id"])
+def test_task_progress_label(client):
+    task = create_task(client, "Write tests")
 
-    response = client.patch(f"/api/tasks/{child['id']}", json={"status": "in_progress"})
+    response = client.patch(f"/api/tasks/{task['id']}", json={"status": "in_progress"})
     assert response.status_code == 200
     task = response.get_json()["task"]
     assert task["status"] == "in_progress"
     assert any(label["name"].startswith("active:") for label in task["labels"])
     assert task["last_progress_at"] is not None
+
+
+def test_create_blocker_creates_task_and_relationship_atomically(client, app):
+    blocked = create_task(client, "Ship compact MVP")
+
+    response = client.post(
+        "/api/tasks",
+        json={"title": "Write tests", "blocks_task_id": blocked["id"]},
+    )
+
+    assert response.status_code == 201
+    blocker = response.get_json()["task"]
+    assert blocker["parent_task_id"] is None
+    assert [task["id"] for task in blocker["blocks"]] == [blocked["id"]]
+
+    with app.app_context():
+        relationship = get_db().execute(
+            "SELECT blocked_task_id, blocker_task_id FROM task_dependencies"
+        ).fetchone()
+        assert (relationship["blocked_task_id"], relationship["blocker_task_id"]) == (
+            blocked["id"],
+            blocker["id"],
+        )
+
+
+def test_legacy_subtasks_migrate_to_dependencies(client, app):
+    parent = create_task(client, "Former parent")
+    child = create_task(client, "Former child")
+
+    with app.app_context():
+        db = get_db()
+        db.execute(
+            "UPDATE tasks SET parent_task_id = ? WHERE id = ?",
+            (parent["id"], child["id"]),
+        )
+        db.commit()
+
+        init_db()
+        init_db()
+
+        migrated_child = db.execute(
+            "SELECT parent_task_id FROM tasks WHERE id = ?", (child["id"],)
+        ).fetchone()
+        relationship_count = db.execute(
+            """
+            SELECT count(*) FROM task_dependencies
+            WHERE blocked_task_id = ? AND blocker_task_id = ?
+            """,
+            (parent["id"], child["id"]),
+        ).fetchone()[0]
+        assert migrated_child["parent_task_id"] is None
+        assert relationship_count == 1
+
+
+def test_create_task_rejects_legacy_parent_relationship(client, app):
+    parent = create_task(client, "Former parent")
+
+    response = client.post(
+        "/api/tasks",
+        json={"title": "Former child", "parent_task_id": parent["id"]},
+    )
+
+    assert response.status_code == 400
+    assert "no longer supported" in response.get_json()["error"]
+    with app.app_context():
+        assert get_db().execute("SELECT count(*) FROM tasks").fetchone()[0] == 1
 
 
 def test_comments_are_only_progress_when_requested(client, app):
@@ -70,6 +132,70 @@ def test_dependency_cycles_are_rejected(client):
     response = client.post(f"/api/tasks/{third['id']}/dependencies", json={"blocker_task_id": first["id"]})
     assert response.status_code == 400
     assert "cycle" in response.get_json()["error"]
+
+
+def test_dependency_can_be_added_and_removed_from_either_task_direction(client, app):
+    current = create_task(client, "Current task")
+    blocker = create_task(client, "Blocking task")
+    dependent = create_task(client, "Dependent task")
+
+    blocked_by_response = client.post(
+        f"/api/tasks/{current['id']}/dependencies",
+        json={"blocker_task_id": blocker["id"]},
+    )
+    blocks_response = client.post(
+        f"/api/tasks/{dependent['id']}/dependencies",
+        json={"blocker_task_id": current["id"]},
+    )
+
+    assert blocked_by_response.status_code == 201
+    assert [task["id"] for task in blocked_by_response.get_json()["task"]["blocked_by"]] == [blocker["id"]]
+    assert blocks_response.status_code == 201
+
+    with app.app_context():
+        relationships = get_db().execute(
+            "SELECT blocked_task_id, blocker_task_id FROM task_dependencies ORDER BY blocked_task_id"
+        ).fetchall()
+        assert [(row["blocked_task_id"], row["blocker_task_id"]) for row in relationships] == [
+            (current["id"], blocker["id"]),
+            (dependent["id"], current["id"]),
+        ]
+
+    assert client.delete(
+        f"/api/tasks/{current['id']}/dependencies/{blocker['id']}"
+    ).status_code == 204
+    assert client.delete(
+        f"/api/tasks/{dependent['id']}/dependencies/{current['id']}"
+    ).status_code == 204
+
+    with app.app_context():
+        assert get_db().execute("SELECT count(*) FROM task_dependencies").fetchone()[0] == 0
+
+
+def test_index_renders_editable_relationships_in_both_directions(client):
+    current = create_task(client, "Current task")
+    blocker = create_task(client, "Blocking task")
+    dependent = create_task(client, "Dependent task")
+    client.post(
+        f"/api/tasks/{current['id']}/dependencies",
+        json={"blocker_task_id": blocker["id"]},
+    )
+    client.post(
+        f"/api/tasks/{dependent['id']}/dependencies",
+        json={"blocker_task_id": current["id"]},
+    )
+
+    page = client.get("/").data
+
+    assert b'add-blocker-form' in page
+    assert b'add-blocked-task-form' in page
+    assert b'create-blocker-form' in page
+    assert b'add-subtask-form' not in page
+    assert "Dependent task — To do".encode() in page
+    assert f'data-blocked-task-id="{current["id"]}"'.encode() in page
+    assert f'data-blocker-task-id="{blocker["id"]}"'.encode() in page
+    assert f'data-blocked-task-id="{dependent["id"]}"'.encode() in page
+    assert f'data-blocker-task-id="{current["id"]}"'.encode() in page
 
 
 def test_completing_blocker_records_progress_for_dependent(client, app):

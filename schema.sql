@@ -1,5 +1,6 @@
 CREATE TABLE IF NOT EXISTS tasks (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    -- Retained temporarily so existing databases can migrate former subtasks.
     parent_task_id INTEGER REFERENCES tasks(id) ON DELETE CASCADE,
     title TEXT NOT NULL CHECK (length(title) BETWEEN 1 AND 200),
     description TEXT NOT NULL DEFAULT '',

@@ -237,15 +237,17 @@ document.addEventListener("click", async (event) => {
     return;
   }
 
-  const removeDependency = event.target.closest(".remove-dependency");
-  if (removeDependency) {
-    const row = taskRow(removeDependency);
-    removeDependency.disabled = true;
+  const removeRelationship = event.target.closest(".remove-relationship");
+  if (removeRelationship) {
+    removeRelationship.disabled = true;
     try {
-      await api(`/api/tasks/${row.dataset.taskId}/dependencies/${removeDependency.dataset.blockerId}`, { method: "DELETE" });
+      await api(
+        `/api/tasks/${removeRelationship.dataset.blockedTaskId}/dependencies/${removeRelationship.dataset.blockerTaskId}`,
+        { method: "DELETE" },
+      );
       location.reload();
     } catch (error) {
-      removeDependency.disabled = false;
+      removeRelationship.disabled = false;
       notify(error.message, true);
     }
     return;
@@ -397,11 +399,14 @@ document.querySelectorAll(".task-attachment-dropzone").forEach((zone) => {
   });
 });
 
-document.querySelectorAll(".add-subtask-form").forEach((form) => {
+document.querySelectorAll(".create-blocker-form").forEach((form) => {
   form.addEventListener("submit", (event) => {
     event.preventDefault();
     const row = taskRow(form);
-    submitAndReload(form, "/api/tasks", { title: form.elements.title.value, parent_task_id: Number(row.dataset.taskId) });
+    submitAndReload(form, "/api/tasks", {
+      title: form.elements.title.value,
+      blocks_task_id: Number(row.dataset.taskId),
+    });
   });
 });
 
@@ -413,11 +418,19 @@ document.querySelectorAll(".add-label-form").forEach((form) => {
   });
 });
 
-document.querySelectorAll(".add-dependency-form").forEach((form) => {
+document.querySelectorAll(".add-blocker-form").forEach((form) => {
   form.addEventListener("submit", (event) => {
     event.preventDefault();
     const row = taskRow(form);
     submitAndReload(form, `/api/tasks/${row.dataset.taskId}/dependencies`, { blocker_task_id: form.elements.blocker_task_id.value });
+  });
+});
+
+document.querySelectorAll(".add-blocked-task-form").forEach((form) => {
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const row = taskRow(form);
+    submitAndReload(form, `/api/tasks/${form.elements.blocked_task_id.value}/dependencies`, { blocker_task_id: Number(row.dataset.taskId) });
   });
 });
 

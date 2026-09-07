@@ -62,7 +62,7 @@ body:has(.new-task-dialog[open]) { overflow: hidden; }
 .check input { margin: 0; }
 
 .task-list { display: grid; gap: 5px; }
-.task-row { margin-left: min(calc(var(--depth) * 22px), 88px); border: 1px solid var(--line); border-left: 3px solid #abb4bf; border-radius: var(--radius); background: var(--panel); box-shadow: 0 1px 1px rgb(25 35 45 / 3%); }
+.task-row { border: 1px solid var(--line); border-left: 3px solid #abb4bf; border-radius: var(--radius); background: var(--panel); box-shadow: 0 1px 1px rgb(25 35 45 / 3%); }
 .task-row.status-in_progress { border-left-color: #3d70d8; }
 .task-row.status-blocked { border-left-color: #c67060; }
 .task-row.status-done { border-left-color: #5a9a72; opacity: 0.78; }
@@ -95,6 +95,14 @@ body:has(.new-task-dialog[open]) { overflow: hidden; }
 .compact-list li:last-child { border-bottom: 0; }
 .compact-list .resolved { color: var(--muted); text-decoration: line-through; }
 .compact-list .empty-note { font-style: italic; border: 0; }
+.relationship-group + .relationship-group { margin-top: 11px; }
+.relationship-group .inline-form + .inline-form { margin-top: 6px; }
+.relationship-heading { color: var(--text); font-size: 0.84rem; font-weight: 650; }
+.relationship-list li { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.relationship-list li > span { min-width: 0; overflow-wrap: anywhere; }
+.relationship-status { color: var(--muted); font-size: 0.75rem; text-decoration: none; }
+.relationship-list .resolved .relationship-status { text-decoration: none; }
+.relationship-list .link-button { flex: 0 0 auto; }
 .link-button { padding: 0; margin-left: 5px; border: 0; background: transparent; color: var(--accent); font-size: 0.8rem; }
 .attachment-list, .pending-attachments { list-style: none; padding: 0; margin: 4px 0 7px; }
 .attachment-item, .pending-attachment { display: flex; align-items: center; gap: 8px; min-height: 42px; padding: 5px; border-bottom: 1px solid #edf0f3; }
@@ -139,7 +147,6 @@ body:has(.new-task-dialog[open]) { overflow: hidden; }
   .attachment-dropzone button { align-self: flex-start; }
   .toolbar { flex-wrap: wrap; }
   .toolbar input[type="search"] { flex: 1; width: auto; }
-  .task-row { margin-left: min(calc(var(--depth) * 10px), 30px); }
   .task-main { grid-template-columns: 24px minmax(120px, 1fr) 106px; }
   .status-select { grid-column: 3; grid-row: 1; }
   .due-date { grid-column: 3; grid-row: 2; width: 106px; }
