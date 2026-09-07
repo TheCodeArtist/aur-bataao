@@ -103,22 +103,6 @@ document.addEventListener("click", async (event) => {
     return;
   }
 
-  const progress = event.target.closest(".record-progress");
-  if (progress) {
-    const row = taskRow(progress);
-    progress.disabled = true;
-    try {
-      const result = await api(`/api/tasks/${row.dataset.taskId}/progress`, { method: "POST", body: "{}" });
-      applyTask(row, result.task);
-      notify("Progress recorded");
-    } catch (error) {
-      notify(error.message, true);
-    } finally {
-      progress.disabled = false;
-    }
-    return;
-  }
-
   const removeLabel = event.target.closest(".remove-label");
   if (removeLabel) {
     const row = taskRow(removeLabel);

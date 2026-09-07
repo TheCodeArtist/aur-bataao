@@ -48,13 +48,13 @@ h1 { display: inline; margin: 0 8px 0 0; font-size: 1.18rem; letter-spacing: -0.
 .task-row.status-blocked { border-left-color: #c67060; }
 .task-row.status-done { border-left-color: #5a9a72; opacity: 0.78; }
 .task-row.status-done .task-title { text-decoration: line-through; color: var(--muted); }
-.task-main { display: grid; grid-template-columns: 24px minmax(180px, 1fr) auto 116px 136px 88px; align-items: center; gap: 6px; min-height: 42px; padding: 5px 7px 5px 4px; }
+.task-main { display: grid; grid-template-columns: 24px minmax(180px, 1fr) auto 116px 136px; align-items: center; gap: 6px; min-height: 42px; padding: 5px 7px 5px 4px; }
 .icon { border: 0; padding: 0; width: 24px; height: 28px; background: transparent; color: var(--muted); font-size: 1.45rem; line-height: 1; transition: transform 120ms ease; }
 .icon:hover { background: #eef1f5; }
 .icon[aria-expanded="true"] { transform: rotate(90deg); }
 .task-title { border-color: transparent; background: transparent; font-weight: 600; width: 100%; }
 .task-title:hover, .task-title:focus { border-color: var(--line); background: white; }
-.status-select, .due-date, .record-progress { height: 30px; font-size: 0.85rem; }
+.status-select, .due-date { height: 30px; font-size: 0.85rem; }
 .badges { display: flex; gap: 4px; }
 .badge { display: inline-flex; align-items: center; min-height: 20px; padding: 1px 6px; border-radius: 999px; font-size: 0.72rem; font-weight: 650; white-space: nowrap; }
 .badge.danger { color: var(--danger); background: var(--danger-soft); }
@@ -85,11 +85,9 @@ h1 { display: inline; margin: 0 8px 0 0; font-size: 1.18rem; letter-spacing: -0.
 #toast.error { background: #932f2f; }
 
 @media (max-width: 850px) {
-  .task-main { grid-template-columns: 24px minmax(150px, 1fr) 112px 38px; }
+  .task-main { grid-template-columns: 24px minmax(150px, 1fr) 112px; }
   .badges { grid-column: 2; grid-row: 2; }
   .due-date { grid-column: 3; grid-row: 2; }
-  .record-progress { grid-column: 4; grid-row: 1 / span 2; width: 38px; overflow: hidden; color: transparent; position: relative; }
-  .record-progress::after { content: "+"; color: var(--text); position: absolute; inset: 5px; font-size: 1.1rem; }
 }
 
 @media (max-width: 620px) {
@@ -100,7 +98,6 @@ h1 { display: inline; margin: 0 8px 0 0; font-size: 1.18rem; letter-spacing: -0.
   .toolbar input[type="search"] { flex: 1; width: auto; }
   .task-row { margin-left: min(calc(var(--depth) * 10px), 30px); }
   .task-main { grid-template-columns: 24px minmax(120px, 1fr) 106px; }
-  .record-progress { display: none; }
   .status-select { grid-column: 3; grid-row: 1; }
   .due-date { grid-column: 3; grid-row: 2; width: 106px; }
   .task-details { padding-left: 10px; }

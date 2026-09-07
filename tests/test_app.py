@@ -137,8 +137,21 @@ def test_removed_automatic_label_waits_for_later_progress(client, app):
         ).fetchone()["count"]
         assert active_count == 0
 
-    response = client.post(f"/api/tasks/{task['id']}/progress", json={})
-    assert any(label["type"] == "active_date" for label in response.get_json()["task"]["labels"])
+    response = client.post(
+        f"/api/tasks/{task['id']}/comments",
+        json={"body": "Made progress", "counts_as_progress": True},
+    )
+    assert response.status_code == 201
+    with app.app_context():
+        active_count = get_db().execute(
+            """
+            SELECT count(*) AS count
+            FROM task_labels tl JOIN labels l ON l.id = tl.label_id
+            WHERE tl.task_id = ? AND tl.removed_at IS NULL AND l.type = 'active_date'
+            """,
+            (task["id"],),
+        ).fetchone()["count"]
+        assert active_count == 1
 
 
 def test_index_renders_compact_task_ui(client):
@@ -147,3 +160,6 @@ def test_index_renders_compact_task_ui(client):
     assert response.status_code == 200
     assert b"Visible task" in response.data
     assert b"task-list" in response.data
+    assert b'Counts as progress' in response.data
+    assert b'record-progress' not in response.data
+    assert b'+ Progress' not in response.data

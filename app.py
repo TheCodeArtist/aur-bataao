@@ -485,18 +485,6 @@ def register_routes(app: Flask) -> None:
             db.commit()
         return jsonify(task=_serialize_task(db, _task_or_404(db, task_id)))
 
-    @app.post("/api/tasks/<int:task_id>/progress")
-    def record_progress(task_id: int):
-        db = get_db()
-        _task_or_404(db, task_id)
-        body = request.get_json(silent=True) or {}
-        note = str(body.get("note", "")).strip()
-        if len(note) > 500:
-            raise ValueError("Progress note must be at most 500 characters")
-        _record_event(db, task_id, "progress_recorded", counts_as_progress=True, details={"note": note})
-        db.commit()
-        return jsonify(task=_serialize_task(db, _task_or_404(db, task_id)))
-
     @app.post("/api/tasks/<int:task_id>/comments")
     def add_comment(task_id: int):
         body = _json_body()

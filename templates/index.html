@@ -60,7 +60,6 @@
             <option value="done" {% if task.status == 'done' %}selected{% endif %}>Done</option>
           </select>
           <input class="due-date" data-field="due_date" type="date" value="{{ task.due_date or '' }}" aria-label="Due date for {{ task.title }}">
-          <button class="record-progress" type="button">+ Progress</button>
         </div>
 
         <div class="task-details" hidden>
