@@ -25,6 +25,16 @@ CREATE TABLE IF NOT EXISTS comments (
     created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS task_attachments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    original_name TEXT NOT NULL,
+    stored_name TEXT NOT NULL UNIQUE,
+    mime_type TEXT NOT NULL,
+    byte_size INTEGER NOT NULL CHECK (byte_size > 0),
+    created_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS task_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
@@ -56,4 +66,4 @@ CREATE INDEX IF NOT EXISTS ix_tasks_parent ON tasks(parent_task_id);
 CREATE INDEX IF NOT EXISTS ix_dependencies_blocker ON task_dependencies(blocker_task_id);
 CREATE INDEX IF NOT EXISTS ix_events_task_date ON task_events(task_id, local_date);
 CREATE INDEX IF NOT EXISTS ix_task_labels_task ON task_labels(task_id, removed_at);
-
+CREATE INDEX IF NOT EXISTS ix_task_attachments_task ON task_attachments(task_id, id);

@@ -1,4 +1,7 @@
 const toast = document.querySelector("#toast");
+const maxAttachmentBytes = Number(document.body.dataset.maxAttachmentBytes);
+const maxAttachmentsPerTask = Number(document.body.dataset.maxAttachments);
+const maxUploadBytes = Number(document.body.dataset.maxUploadBytes);
 let toastTimer;
 
 function notify(message, error = false) {
@@ -9,9 +12,13 @@ function notify(message, error = false) {
 }
 
 async function api(url, options = {}) {
+  const headers = new Headers(options.headers || {});
+  if (options.body && !(options.body instanceof FormData) && !headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
   const response = await fetch(url, {
     ...options,
-    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+    headers,
   });
   if (!response.ok) {
     let message = `Request failed (${response.status})`;
@@ -23,6 +30,118 @@ async function api(url, options = {}) {
 
 function taskRow(element) {
   return element.closest(".task-row");
+}
+
+function formatFileSize(byteSize) {
+  if (byteSize < 1024) return `${byteSize} B`;
+  if (byteSize < 1024 * 1024) return `${(byteSize / 1024).toFixed(1)} KB`;
+  return `${(byteSize / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function clipboardFiles(event) {
+  return [...(event.clipboardData?.items || [])]
+    .filter((item) => item.kind === "file")
+    .map((item) => item.getAsFile())
+    .filter(Boolean);
+}
+
+function uploadFilename(file, index) {
+  if (file.name) return file.name;
+  const extension = {
+    "image/gif": ".gif",
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+  }[file.type] || "";
+  return `clipboard-${Date.now()}-${index + 1}${extension}`;
+}
+
+function attachmentError(files, existingCount = 0, pendingFiles = []) {
+  const emptyFile = files.find((file) => file.size === 0);
+  if (emptyFile) return `${emptyFile.name || "An attachment"} is empty`;
+  const oversizedFile = files.find((file) => file.size > maxAttachmentBytes);
+  if (oversizedFile) {
+    return `${oversizedFile.name || "An attachment"} is larger than ${formatFileSize(maxAttachmentBytes)}`;
+  }
+  if (existingCount + pendingFiles.length + files.length > maxAttachmentsPerTask) {
+    return `A task can have at most ${maxAttachmentsPerTask} attachments`;
+  }
+  const uploadSize = [...pendingFiles, ...files].reduce((total, file) => total + file.size, 0);
+  if (uploadSize >= maxUploadBytes) {
+    return `Attach fewer files at once (combined limit ${formatFileSize(maxUploadBytes)})`;
+  }
+  return "";
+}
+
+function bindDropzone(zone, onFiles) {
+  const input = zone.querySelector(".attachment-input");
+  const chooser = zone.querySelector(".choose-attachments");
+
+  chooser.addEventListener("click", () => input.click());
+  zone.addEventListener("pointerdown", (event) => {
+    if (!event.target.closest("button")) zone.focus();
+  });
+  input.addEventListener("change", () => {
+    if (input.files.length) onFiles([...input.files]);
+    input.value = "";
+  });
+
+  zone.addEventListener("keydown", (event) => {
+    if (event.target === zone && (event.key === "Enter" || event.key === " ")) {
+      event.preventDefault();
+      input.click();
+    }
+  });
+  zone.addEventListener("dragenter", (event) => {
+    event.preventDefault();
+    zone.classList.add("is-dragging");
+  });
+  zone.addEventListener("dragover", (event) => {
+    event.preventDefault();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+    zone.classList.add("is-dragging");
+  });
+  zone.addEventListener("dragleave", (event) => {
+    if (!zone.contains(event.relatedTarget)) zone.classList.remove("is-dragging");
+  });
+  zone.addEventListener("drop", (event) => {
+    event.preventDefault();
+    zone.classList.remove("is-dragging");
+    const files = [...(event.dataTransfer?.files || [])];
+    if (files.length) onFiles(files);
+  });
+  zone.addEventListener("paste", (event) => {
+    const files = clipboardFiles(event);
+    if (files.length) {
+      event.preventDefault();
+      onFiles(files);
+    }
+  });
+}
+
+async function uploadTaskAttachments(zone, files) {
+  const row = taskRow(zone);
+  const selectionError = attachmentError(files, Number(zone.dataset.attachmentCount));
+  if (selectionError) {
+    notify(selectionError, true);
+    return;
+  }
+  const formData = new FormData();
+  files.forEach((file, index) => formData.append("attachments", file, uploadFilename(file, index)));
+  zone.classList.add("is-uploading");
+  zone.querySelectorAll("button, input").forEach((control) => { control.disabled = true; });
+  try {
+    await api(`/api/tasks/${row.dataset.taskId}/attachments`, {
+      method: "POST",
+      body: formData,
+    });
+    notify(`${files.length} attachment${files.length === 1 ? "" : "s"} added`);
+    location.reload();
+  } catch (error) {
+    zone.classList.remove("is-uploading");
+    zone.querySelectorAll("button, input").forEach((control) => { control.disabled = false; });
+    notify(error.message, true);
+  }
 }
 
 function renderLabels(row, labels) {
@@ -129,6 +248,23 @@ document.addEventListener("click", async (event) => {
       removeDependency.disabled = false;
       notify(error.message, true);
     }
+    return;
+  }
+
+  const removeAttachment = event.target.closest(".remove-attachment");
+  if (removeAttachment) {
+    const row = taskRow(removeAttachment);
+    const item = removeAttachment.closest(".attachment-item");
+    removeAttachment.disabled = true;
+    try {
+      await api(`/api/tasks/${row.dataset.taskId}/attachments/${item.dataset.attachmentId}`, {
+        method: "DELETE",
+      });
+      location.reload();
+    } catch (error) {
+      removeAttachment.disabled = false;
+      notify(error.message, true);
+    }
   }
 });
 
@@ -144,10 +280,121 @@ async function submitAndReload(form, url, body) {
   }
 }
 
-document.querySelector("#new-task-form").addEventListener("submit", (event) => {
+const newTaskDialog = document.querySelector("#new-task-dialog");
+const newTaskForm = document.querySelector("#new-task-form");
+const newTaskInput = document.querySelector("#new-task-input");
+const newTaskSubmit = newTaskForm.querySelector("button[type='submit']");
+const pendingAttachmentList = document.querySelector("#pending-attachments");
+let pendingAttachments = [];
+
+function renderPendingAttachments() {
+  pendingAttachmentList.replaceChildren(...pendingAttachments.map((file, index) => {
+    const item = document.createElement("li");
+    item.className = "pending-attachment";
+
+    const details = document.createElement("span");
+    details.append(document.createTextNode(file.name || "clipboard image"));
+    const size = document.createElement("small");
+    size.textContent = formatFileSize(file.size);
+    details.append(size);
+
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.textContent = "Remove";
+    remove.setAttribute("aria-label", `Remove ${file.name || "clipboard image"}`);
+    remove.addEventListener("click", () => {
+      pendingAttachments.splice(index, 1);
+      renderPendingAttachments();
+    });
+    item.append(details, remove);
+    return item;
+  }));
+}
+
+function stageAttachments(files) {
+  const knownFiles = new Set(
+    pendingAttachments.map((file) => `${file.name}:${file.size}:${file.lastModified}`),
+  );
+  const additions = [];
+  files.forEach((file) => {
+    const key = `${file.name}:${file.size}:${file.lastModified}`;
+    if (!knownFiles.has(key)) {
+      knownFiles.add(key);
+      additions.push(file);
+    }
+  });
+  const selectionError = attachmentError(additions, 0, pendingAttachments);
+  if (selectionError) {
+    notify(selectionError, true);
+    return;
+  }
+  pendingAttachments.push(...additions);
+  renderPendingAttachments();
+}
+
+function updateNewTaskSubmit() {
+  newTaskSubmit.disabled = !newTaskInput.value.trim() || newTaskForm.getAttribute("aria-busy") === "true";
+}
+
+document.querySelector("#open-task-dialog").addEventListener("click", () => {
+  newTaskDialog.showModal();
+  requestAnimationFrame(() => newTaskInput.focus());
+});
+newTaskDialog.querySelector(".dialog-close").addEventListener("click", () => newTaskDialog.close());
+newTaskDialog.querySelector(".cancel-new-task").addEventListener("click", () => newTaskDialog.close());
+newTaskDialog.addEventListener("click", (event) => {
+  if (event.target === newTaskDialog) newTaskDialog.close();
+});
+newTaskDialog.addEventListener("close", () => {
+  newTaskForm.reset();
+  newTaskForm.removeAttribute("aria-busy");
+  pendingAttachments = [];
+  renderPendingAttachments();
+  updateNewTaskSubmit();
+});
+newTaskInput.addEventListener("input", updateNewTaskSubmit);
+bindDropzone(document.querySelector("#new-task-dropzone"), stageAttachments);
+newTaskDialog.addEventListener("paste", (event) => {
+  if (document.querySelector("#new-task-dropzone").contains(event.target)) return;
+  const files = clipboardFiles(event);
+  if (files.length) {
+    event.preventDefault();
+    stageAttachments(files);
+  }
+});
+
+newTaskForm.addEventListener("submit", async (event) => {
   event.preventDefault();
-  const form = event.currentTarget;
-  submitAndReload(form, "/api/tasks", { title: form.elements.title.value });
+  const title = newTaskInput.value.trim();
+  if (!title) return;
+
+  newTaskForm.setAttribute("aria-busy", "true");
+  updateNewTaskSubmit();
+  const formData = new FormData();
+  formData.append("title", title);
+  pendingAttachments.forEach((file, index) => {
+    formData.append("attachments", file, uploadFilename(file, index));
+  });
+  try {
+    await api("/api/tasks", { method: "POST", body: formData });
+    location.reload();
+  } catch (error) {
+    newTaskForm.removeAttribute("aria-busy");
+    updateNewTaskSubmit();
+    notify(error.message, true);
+  }
+});
+
+document.querySelectorAll(".task-attachment-dropzone").forEach((zone) => {
+  bindDropzone(zone, (files) => uploadTaskAttachments(zone, files));
+  taskRow(zone).querySelector(".task-details").addEventListener("paste", (event) => {
+    if (zone.contains(event.target)) return;
+    const files = clipboardFiles(event);
+    if (files.length) {
+      event.preventDefault();
+      uploadTaskAttachments(zone, files);
+    }
+  });
 });
 
 document.querySelectorAll(".add-subtask-form").forEach((form) => {

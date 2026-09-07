@@ -1,5 +1,6 @@
-import json
 from datetime import datetime, timezone
+from io import BytesIO
+from pathlib import Path
 
 import pytest
 
@@ -160,6 +161,75 @@ def test_index_renders_compact_task_ui(client):
     assert response.status_code == 200
     assert b"Visible task" in response.data
     assert b"task-list" in response.data
+    assert b'new-task-dialog' in response.data
+    assert b'task-composer' in response.data
+    assert b">Suno...</button>" in response.data
+    assert b">Save task</button>" in response.data
     assert b'Counts as progress' in response.data
     assert b'record-progress' not in response.data
     assert b'+ Progress' not in response.data
+
+
+def test_create_task_with_attachment_and_remove_it(client):
+    image_bytes = b"fake-png-content"
+    response = client.post(
+        "/api/tasks",
+        data={
+            "title": "Task with a screenshot",
+            "attachments": (BytesIO(image_bytes), "../../screenshot.png", "image/png"),
+        },
+        content_type="multipart/form-data",
+    )
+    assert response.status_code == 201
+    task = response.get_json()["task"]
+    assert len(task["attachments"]) == 1
+    attachment = task["attachments"][0]
+    assert attachment["original_name"] == "screenshot.png"
+    assert attachment["previewable"] is True
+
+    preview = client.get(f"/api/attachments/{attachment['id']}")
+    assert preview.status_code == 200
+    assert preview.data == image_bytes
+    assert preview.mimetype == "image/png"
+    assert preview.headers["X-Content-Type-Options"] == "nosniff"
+    preview.close()
+
+    download = client.get(f"/api/attachments/{attachment['id']}?download=1")
+    assert "attachment" in download.headers["Content-Disposition"]
+    download.close()
+
+    removed = client.delete(f"/api/tasks/{task['id']}/attachments/{attachment['id']}")
+    assert removed.status_code == 204
+    assert client.get(f"/api/attachments/{attachment['id']}").status_code == 404
+
+
+def test_add_attachment_to_existing_task(client):
+    task = create_task(client, "Attach later")
+    response = client.post(
+        f"/api/tasks/{task['id']}/attachments",
+        data={"attachments": (BytesIO(b"notes"), "notes.txt", "text/plain")},
+        content_type="multipart/form-data",
+    )
+    assert response.status_code == 201
+    attachments = response.get_json()["attachments"]
+    assert len(attachments) == 1
+    assert attachments[0]["original_name"] == "notes.txt"
+    assert attachments[0]["previewable"] is False
+
+
+def test_oversized_attachment_does_not_create_partial_task(client, app):
+    app.config["MAX_ATTACHMENT_BYTES"] = 4
+    response = client.post(
+        "/api/tasks",
+        data={
+            "title": "Should roll back",
+            "attachments": (BytesIO(b"12345"), "large.txt", "text/plain"),
+        },
+        content_type="multipart/form-data",
+    )
+    assert response.status_code == 400
+    assert "larger than" in response.get_json()["error"]
+
+    with app.app_context():
+        assert get_db().execute("SELECT count(*) FROM tasks").fetchone()[0] == 0
+    assert not any(Path(app.config["ATTACHMENTS_DIR"]).iterdir())

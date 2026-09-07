@@ -1,6 +1,6 @@
 # Aur Bataao
 
-A compact, single-user task tracker built with Flask, server-rendered HTML, vanilla JavaScript, and SQLite.
+A compact, single-user task tracker built with Flask, server-rendered HTML, vanilla JavaScript, and SQLite. New tasks are captured in a focused dialog, and every task can hold files added through the picker, drag and drop, or clipboard paste.
 
 ## Run locally (Windows PowerShell)
 
@@ -17,10 +17,13 @@ Configuration is optional:
 $env:AUR_BATAAO_TIMEZONE = "Asia/Kolkata"
 $env:AUR_BATAAO_HOST = "127.0.0.1"
 $env:AUR_BATAAO_PORT = "8080"
+$env:AUR_BATAAO_ATTACHMENTS_DIR = "D:\AurBataao\attachments"
 aur-bataao
 ```
 
-Keep the default loopback host unless access is protected by a private network, VPN, or authenticated reverse proxy. For a backup, stop the process and copy the `instance/tasks.sqlite3` file.
+Keep the default loopback host unless access is protected by a private network, VPN, or authenticated reverse proxy.
+
+Attachments default to `instance/attachments`. Each file is limited to 10 MB, each task to 20 attachments, and each upload request to 25 MB. Backups should include both the SQLite database and the attachments directory.
 
 ## Development
 

@@ -7,17 +7,22 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
   <script type="module" src="{{ url_for('static', filename='app.js') }}"></script>
 </head>
-<body data-timezone="{{ timezone_name }}" data-today="{{ today }}">
+<body
+  data-timezone="{{ timezone_name }}"
+  data-today="{{ today }}"
+  data-max-attachment-bytes="{{ max_attachment_bytes }}"
+  data-max-attachments="{{ max_attachments_per_task }}"
+  data-max-upload-bytes="{{ max_upload_bytes }}"
+>
   <main class="shell">
     <header class="app-header">
-      <div>
-        <h1>Aur Bataao</h1>
+      <div class="app-identity">
+        <h1 class="app-title">
+          <img class="app-icon" src="{{ url_for('static', filename='aur-bataao-icon.png') }}" alt="Aur Bataao" width="56" height="56">
+        </h1>
         <span class="muted">{{ tasks|length }} task{% if tasks|length != 1 %}s{% endif %} · {{ timezone_name }}</span>
       </div>
-      <form id="new-task-form" class="quick-add">
-        <input name="title" maxlength="200" placeholder="Add a task…" aria-label="New task title" required>
-        <button type="submit" class="primary">Add</button>
-      </form>
+      <button id="open-task-dialog" type="button" class="primary new-task-button">Suno...</button>
     </header>
 
     <section class="toolbar" aria-label="Task filters">
@@ -52,6 +57,7 @@
             {% if task.stalled %}<span class="badge warning derived-badge stalled-badge">stalled</span>{% endif %}
             {% set unresolved = task.blocked_by|rejectattr('resolved')|list %}
             {% if unresolved %}<span class="badge danger dependency-badge">blocked ×{{ unresolved|length }}</span>{% endif %}
+            {% if task.attachments %}<span class="badge attachment-badge">📎 {{ task.attachments|length }}</span>{% endif %}
           </div>
           <select class="status-select" data-field="status" aria-label="Status for {{ task.title }}">
             <option value="todo" {% if task.status == 'todo' %}selected{% endif %}>To do</option>
@@ -67,6 +73,33 @@
             <section>
               <label class="field-label" for="description-{{ task.id }}">Description</label>
               <textarea id="description-{{ task.id }}" data-field="description" rows="3" maxlength="5000" placeholder="Optional details">{{ task.description }}</textarea>
+
+              <div class="section-label">Attachments</div>
+              <ul class="attachment-list">
+                {% for attachment in task.attachments %}
+                <li class="attachment-item" data-attachment-id="{{ attachment.id }}">
+                  {% if attachment.previewable %}
+                  <a class="attachment-preview" href="{{ url_for('get_attachment', attachment_id=attachment.id, download=1) }}" title="Download {{ attachment.original_name }}">
+                    <img src="{{ url_for('get_attachment', attachment_id=attachment.id) }}" alt="">
+                  </a>
+                  {% else %}
+                  <span class="attachment-file-icon" aria-hidden="true">📎</span>
+                  {% endif %}
+                  <span class="attachment-meta">
+                    <a href="{{ url_for('get_attachment', attachment_id=attachment.id, download=1) }}">{{ attachment.original_name }}</a>
+                    <small>{{ attachment.size_label }}</small>
+                  </span>
+                  <button type="button" class="link-button remove-attachment" aria-label="Remove {{ attachment.original_name }}">Remove</button>
+                </li>
+                {% else %}
+                <li class="muted empty-attachments">No attachments yet</li>
+                {% endfor %}
+              </ul>
+              <div class="attachment-dropzone task-attachment-dropzone" data-attachment-count="{{ task.attachments|length }}" tabindex="0" role="group" aria-label="Attach files to {{ task.title }} by choosing, dropping, or pasting">
+                <input class="attachment-input" type="file" multiple hidden>
+                <span><strong>Drop files</strong> or paste a screenshot</span>
+                <button type="button" class="choose-attachments">Choose files</button>
+              </div>
 
               <div class="section-label">Labels</div>
               <div class="label-list">
@@ -128,11 +161,41 @@
         </div>
       </article>
       {% else %}
-      <div class="empty-state">No tasks yet. Add one above.</div>
+      <div class="empty-state">No tasks yet. Create one with <strong>New task</strong>.</div>
       {% endfor %}
     </section>
   </main>
+
+  <dialog id="new-task-dialog" class="new-task-dialog" aria-labelledby="new-task-title">
+    <div class="dialog-heading">
+      <div>
+        <h2 id="new-task-title">New task</h2>
+        <p>Capture the task now; details can be refined later.</p>
+      </div>
+      <button type="button" class="dialog-close" aria-label="Close new task dialog">×</button>
+    </div>
+
+    <form id="new-task-form">
+      <label class="field-label first" for="new-task-input">What needs doing?</label>
+      <div class="task-composer">
+        <input id="new-task-input" name="title" maxlength="200" placeholder="Add a task…" autocomplete="off" required>
+        <button type="submit" class="primary" disabled>Save task</button>
+      </div>
+      <p class="form-hint">Press Enter to create the task.</p>
+
+      <div class="section-label">Attachments <span class="optional">optional</span></div>
+      <div id="new-task-dropzone" class="attachment-dropzone" tabindex="0" role="group" aria-label="Attach files by choosing, dropping, or pasting">
+        <input id="new-task-attachments" class="attachment-input" type="file" multiple hidden>
+        <span><strong>Drop files here</strong> or paste screenshots from the clipboard (10 MB each)</span>
+        <button type="button" class="choose-attachments">Choose files</button>
+      </div>
+      <ul id="pending-attachments" class="pending-attachments" aria-live="polite"></ul>
+
+      <div class="dialog-actions">
+        <button type="button" class="cancel-new-task">Cancel</button>
+      </div>
+    </form>
+  </dialog>
   <div id="toast" role="status" aria-live="polite"></div>
 </body>
 </html>
-

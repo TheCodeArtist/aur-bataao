@@ -5,16 +5,18 @@ import os
 import sqlite3
 import threading
 import time
+import uuid
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from flask import Flask, current_app, g, jsonify, render_template, request
+from flask import Flask, current_app, g, jsonify, render_template, request, send_file
 
 
 STATUSES = {"todo", "in_progress", "blocked", "done"}
 MAX_RECONCILE_AGE_SECONDS = 60
+PREVIEWABLE_IMAGE_TYPES = {"image/gif", "image/jpeg", "image/png", "image/webp"}
 
 
 def create_app(test_config: dict[str, Any] | None = None) -> Flask:
@@ -22,9 +24,16 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     app.config.from_mapping(
         DATABASE=os.getenv("AUR_BATAAO_DATABASE", str(Path(app.instance_path) / "tasks.sqlite3")),
         USER_TIMEZONE=os.getenv("AUR_BATAAO_TIMEZONE", "Asia/Kolkata"),
+        ATTACHMENTS_DIR=os.getenv("AUR_BATAAO_ATTACHMENTS_DIR"),
+        MAX_ATTACHMENT_BYTES=10 * 1024 * 1024,
+        MAX_ATTACHMENTS_PER_TASK=20,
+        MAX_CONTENT_LENGTH=25 * 1024 * 1024,
     )
     if test_config:
         app.config.update(test_config)
+
+    if not app.config["ATTACHMENTS_DIR"]:
+        app.config["ATTACHMENTS_DIR"] = str(Path(app.config["DATABASE"]).parent / "attachments")
 
     try:
         app.config["TZINFO"] = ZoneInfo(app.config["USER_TIMEZONE"])
@@ -33,6 +42,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
 
     Path(app.instance_path).mkdir(parents=True, exist_ok=True)
     Path(app.config["DATABASE"]).parent.mkdir(parents=True, exist_ok=True)
+    Path(app.config["ATTACHMENTS_DIR"]).mkdir(parents=True, exist_ok=True)
     app.extensions["reconcile_lock"] = threading.Lock()
     app.extensions["last_reconcile_monotonic"] = 0.0
 
@@ -219,6 +229,96 @@ def _task_or_404(db: sqlite3.Connection, task_id: int) -> sqlite3.Row:
     return row
 
 
+def _attachment_path(stored_name: str) -> Path:
+    if len(stored_name) != 32 or any(character not in "0123456789abcdef" for character in stored_name):
+        raise RuntimeError("Invalid stored attachment name")
+    return Path(current_app.config["ATTACHMENTS_DIR"]) / stored_name
+
+
+def _display_filename(filename: str | None) -> str:
+    raw_name = (filename or "").replace("\\", "/").rsplit("/", 1)[-1]
+    clean_name = "".join(character for character in raw_name if character >= " " and character != "\x7f").strip()
+    return clean_name[:255] or "attachment"
+
+
+def _size_label(byte_size: int) -> str:
+    if byte_size < 1024:
+        return f"{byte_size} B"
+    if byte_size < 1024 * 1024:
+        return f"{byte_size / 1024:.1f} KB"
+    return f"{byte_size / (1024 * 1024):.1f} MB"
+
+
+def _serialize_attachment(row: sqlite3.Row) -> dict[str, Any]:
+    item = dict(row)
+    item["previewable"] = item["mime_type"] in PREVIEWABLE_IMAGE_TYPES
+    item["size_label"] = _size_label(item["byte_size"])
+    return item
+
+
+def _save_attachments(
+    db: sqlite3.Connection,
+    task_id: int,
+    uploads: list[Any],
+    now: datetime,
+) -> list[Path]:
+    uploads = [upload for upload in uploads if upload and upload.filename]
+    if not uploads:
+        return []
+
+    existing_count = db.execute(
+        "SELECT count(*) AS count FROM task_attachments WHERE task_id = ?",
+        (task_id,),
+    ).fetchone()["count"]
+    maximum_count = current_app.config["MAX_ATTACHMENTS_PER_TASK"]
+    if existing_count + len(uploads) > maximum_count:
+        raise ValueError(f"A task can have at most {maximum_count} attachments")
+
+    maximum_bytes = current_app.config["MAX_ATTACHMENT_BYTES"]
+    stored_paths: list[Path] = []
+    try:
+        for upload in uploads:
+            stored_name = uuid.uuid4().hex
+            target = _attachment_path(stored_name)
+            byte_size = 0
+            with target.open("xb") as stored_file:
+                while chunk := upload.stream.read(64 * 1024):
+                    byte_size += len(chunk)
+                    if byte_size > maximum_bytes:
+                        raise ValueError(
+                            f"{_display_filename(upload.filename)} is larger than "
+                            f"{_size_label(maximum_bytes)}"
+                        )
+                    stored_file.write(chunk)
+            stored_paths.append(target)
+            if byte_size == 0:
+                raise ValueError(f"{_display_filename(upload.filename)} is empty")
+            mime_type = (upload.mimetype or "application/octet-stream").lower()[:127]
+            db.execute(
+                """
+                INSERT INTO task_attachments(
+                    task_id, original_name, stored_name, mime_type, byte_size, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    task_id,
+                    _display_filename(upload.filename),
+                    stored_name,
+                    mime_type,
+                    byte_size,
+                    iso_utc(now),
+                ),
+            )
+    except Exception:
+        for stored_path in stored_paths:
+            stored_path.unlink(missing_ok=True)
+        # The current target is created before it is appended when validation fails.
+        if "target" in locals():
+            target.unlink(missing_ok=True)
+        raise
+    return stored_paths
+
+
 def _serialize_task(db: sqlite3.Connection, row: sqlite3.Row) -> dict[str, Any]:
     item = dict(row)
     item["labels"] = [
@@ -237,6 +337,16 @@ def _serialize_task(db: sqlite3.Connection, row: sqlite3.Row) -> dict[str, Any]:
         dict(comment)
         for comment in db.execute(
             "SELECT id, body, created_at FROM comments WHERE task_id = ? ORDER BY id DESC LIMIT 20",
+            (row["id"],),
+        ).fetchall()
+    ]
+    item["attachments"] = [
+        _serialize_attachment(attachment)
+        for attachment in db.execute(
+            """
+            SELECT id, task_id, original_name, stored_name, mime_type, byte_size, created_at
+            FROM task_attachments WHERE task_id = ? ORDER BY id DESC
+            """,
             (row["id"],),
         ).fetchall()
     ]
@@ -362,6 +472,10 @@ def register_routes(app: Flask) -> None:
             return jsonify(error="Not found"), 404
         return "Not found", 404
 
+    @app.errorhandler(413)
+    def request_too_large(_exc):
+        return jsonify(error="Upload is too large; attach fewer or smaller files"), 413
+
     @app.get("/")
     def index():
         maybe_reconcile()
@@ -373,11 +487,16 @@ def register_routes(app: Flask) -> None:
             statuses=("todo", "in_progress", "blocked", "done"),
             timezone_name=current_app.config["USER_TIMEZONE"],
             today=datetime.now(current_app.config["TZINFO"]).date().isoformat(),
+            max_attachment_bytes=current_app.config["MAX_ATTACHMENT_BYTES"],
+            max_attachments_per_task=current_app.config["MAX_ATTACHMENTS_PER_TASK"],
+            max_upload_bytes=current_app.config["MAX_CONTENT_LENGTH"],
         )
 
     @app.post("/api/tasks")
     def create_task():
-        body = _json_body()
+        is_multipart = request.mimetype == "multipart/form-data"
+        body = request.form if is_multipart else _json_body()
+        uploads = request.files.getlist("attachments") if is_multipart else []
         title = str(body.get("title", "")).strip()
         if not title or len(title) > 200:
             raise ValueError("Title must be between 1 and 200 characters")
@@ -391,17 +510,101 @@ def register_routes(app: Flask) -> None:
         if parent_id is not None:
             _task_or_404(db, parent_id)
         now = utc_now()
-        cursor = db.execute(
-            """
-            INSERT INTO tasks(parent_task_id, title, created_at, updated_at)
-            VALUES (?, ?, ?, ?)
-            """,
-            (parent_id, title, iso_utc(now), iso_utc(now)),
-        )
-        task_id = cursor.lastrowid
-        _record_event(db, task_id, "task_created", details={"status": "todo"}, now=now)
-        db.commit()
+        stored_paths: list[Path] = []
+        try:
+            cursor = db.execute(
+                """
+                INSERT INTO tasks(parent_task_id, title, created_at, updated_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (parent_id, title, iso_utc(now), iso_utc(now)),
+            )
+            task_id = cursor.lastrowid
+            _record_event(db, task_id, "task_created", details={"status": "todo"}, now=now)
+            stored_paths = _save_attachments(db, task_id, uploads, now)
+            db.commit()
+        except Exception:
+            db.rollback()
+            for stored_path in stored_paths:
+                stored_path.unlink(missing_ok=True)
+            raise
         return jsonify(task=_serialize_task(db, _task_or_404(db, task_id))), 201
+
+    @app.post("/api/tasks/<int:task_id>/attachments")
+    def add_attachments(task_id: int):
+        db = get_db()
+        _task_or_404(db, task_id)
+        now = utc_now()
+        stored_paths: list[Path] = []
+        try:
+            stored_paths = _save_attachments(db, task_id, request.files.getlist("attachments"), now)
+            if not stored_paths:
+                raise ValueError("Choose at least one file")
+            _record_event(
+                db,
+                task_id,
+                "attachments_added",
+                details={"count": len(stored_paths)},
+                now=now,
+            )
+            db.commit()
+        except Exception:
+            db.rollback()
+            for stored_path in stored_paths:
+                stored_path.unlink(missing_ok=True)
+            raise
+        task = _serialize_task(db, _task_or_404(db, task_id))
+        return jsonify(attachments=task["attachments"]), 201
+
+    @app.get("/api/attachments/<int:attachment_id>")
+    def get_attachment(attachment_id: int):
+        attachment = get_db().execute(
+            "SELECT * FROM task_attachments WHERE id = ?",
+            (attachment_id,),
+        ).fetchone()
+        if attachment is None:
+            from flask import abort
+
+            abort(404)
+        path = _attachment_path(attachment["stored_name"])
+        if not path.is_file():
+            from flask import abort
+
+            abort(404)
+        response = send_file(
+            path,
+            mimetype=attachment["mime_type"],
+            as_attachment=request.args.get("download") == "1"
+            or attachment["mime_type"] not in PREVIEWABLE_IMAGE_TYPES,
+            download_name=attachment["original_name"],
+            conditional=True,
+        )
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        return response
+
+    @app.delete("/api/tasks/<int:task_id>/attachments/<int:attachment_id>")
+    def remove_attachment(task_id: int, attachment_id: int):
+        db = get_db()
+        _task_or_404(db, task_id)
+        attachment = db.execute(
+            "SELECT * FROM task_attachments WHERE id = ? AND task_id = ?",
+            (attachment_id, task_id),
+        ).fetchone()
+        if attachment is None:
+            return jsonify(error="Attachment not found"), 404
+        try:
+            _attachment_path(attachment["stored_name"]).unlink(missing_ok=True)
+        except PermissionError as exc:
+            raise ValueError("Attachment is still in use; close its preview and try again") from exc
+        db.execute("DELETE FROM task_attachments WHERE id = ?", (attachment_id,))
+        _record_event(
+            db,
+            task_id,
+            "attachment_removed",
+            details={"attachment_id": attachment_id},
+        )
+        db.commit()
+        return "", 204
 
     @app.patch("/api/tasks/<int:task_id>")
     def update_task(task_id: int):
