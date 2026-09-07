@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Aur Bataao</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+  <script type="module" src="{{ url_for('static', filename='app.js') }}"></script>
+</head>
+<body data-timezone="{{ timezone_name }}" data-today="{{ today }}">
+  <main class="shell">
+    <header class="app-header">
+      <div>
+        <h1>Aur Bataao</h1>
+        <span class="muted">{{ tasks|length }} task{% if tasks|length != 1 %}s{% endif %} · {{ timezone_name }}</span>
+      </div>
+      <form id="new-task-form" class="quick-add">
+        <input name="title" maxlength="200" placeholder="Add a task…" aria-label="New task title" required>
+        <button type="submit" class="primary">Add</button>
+      </form>
+    </header>
+
+    <section class="toolbar" aria-label="Task filters">
+      <input id="search-filter" type="search" placeholder="Filter tasks…" aria-label="Filter tasks">
+      <select id="status-filter" aria-label="Filter by status">
+        <option value="">All statuses</option>
+        <option value="todo">To do</option>
+        <option value="in_progress">In progress</option>
+        <option value="blocked">Blocked</option>
+        <option value="done">Done</option>
+      </select>
+      <label class="check"><input id="overdue-filter" type="checkbox"> Overdue</label>
+      <label class="check"><input id="stalled-filter" type="checkbox"> Stalled</label>
+    </section>
+
+    <section id="task-list" class="task-list" aria-live="polite">
+      {% for task in tasks %}
+      <article
+        class="task-row status-{{ task.status }}"
+        data-task-id="{{ task.id }}"
+        data-status="{{ task.status }}"
+        data-title="{{ task.title|lower }}"
+        data-overdue="{{ 'true' if task.overdue else 'false' }}"
+        data-stalled="{{ 'true' if task.stalled else 'false' }}"
+        style="--depth: {{ task.depth }}"
+      >
+        <div class="task-main">
+          <button class="icon toggle-details" type="button" aria-expanded="false" aria-label="Show task details">›</button>
+          <input class="task-title" data-field="title" value="{{ task.title }}" maxlength="200" aria-label="Task title">
+          <div class="badges">
+            {% if task.overdue %}<span class="badge danger derived-badge overdue-badge">overdue</span>{% endif %}
+            {% if task.stalled %}<span class="badge warning derived-badge stalled-badge">stalled</span>{% endif %}
+            {% set unresolved = task.blocked_by|rejectattr('resolved')|list %}
+            {% if unresolved %}<span class="badge danger dependency-badge">blocked ×{{ unresolved|length }}</span>{% endif %}
+          </div>
+          <select class="status-select" data-field="status" aria-label="Status for {{ task.title }}">
+            <option value="todo" {% if task.status == 'todo' %}selected{% endif %}>To do</option>
+            <option value="in_progress" {% if task.status == 'in_progress' %}selected{% endif %}>In progress</option>
+            <option value="blocked" {% if task.status == 'blocked' %}selected{% endif %}>Blocked</option>
+            <option value="done" {% if task.status == 'done' %}selected{% endif %}>Done</option>
+          </select>
+          <input class="due-date" data-field="due_date" type="date" value="{{ task.due_date or '' }}" aria-label="Due date for {{ task.title }}">
+          <button class="record-progress" type="button">+ Progress</button>
+        </div>
+
+        <div class="task-details" hidden>
+          <div class="detail-grid">
+            <section>
+              <label class="field-label" for="description-{{ task.id }}">Description</label>
+              <textarea id="description-{{ task.id }}" data-field="description" rows="3" maxlength="5000" placeholder="Optional details">{{ task.description }}</textarea>
+
+              <div class="section-label">Labels</div>
+              <div class="label-list">
+                {% for label in task.labels %}
+                <span class="label-chip {{ label.type }}" data-label-id="{{ label.id }}">
+                  {{ label.name }}
+                  <button type="button" class="remove-label" title="Remove label" aria-label="Remove {{ label.name }}">×</button>
+                </span>
+                {% endfor %}
+              </div>
+              <form class="inline-form add-label-form">
+                <input name="name" maxlength="32" placeholder="Label" aria-label="New label">
+                <button type="submit">Add label</button>
+              </form>
+
+              <div class="section-label">Dependencies</div>
+              <ul class="compact-list dependency-list">
+                {% for dep in task.blocked_by %}
+                <li class="{% if dep.resolved %}resolved{% endif %}">
+                  Blocked by “{{ dep.title }}”{% if dep.resolved %} (done){% endif %}
+                  <button type="button" class="link-button remove-dependency" data-blocker-id="{{ dep.id }}">remove</button>
+                </li>
+                {% else %}<li class="muted empty-note">No blockers</li>{% endfor %}
+                {% for dep in task.blocks %}<li>Blocks “{{ dep.title }}”</li>{% endfor %}
+              </ul>
+              <form class="inline-form add-dependency-form">
+                <select name="blocker_task_id" aria-label="Choose blocker">
+                  <option value="">Add blocker…</option>
+                  {% for choice in task_choices %}
+                    {% if choice.id != task.id %}<option value="{{ choice.id }}">{{ choice.title }}</option>{% endif %}
+                  {% endfor %}
+                </select>
+                <button type="submit">Add</button>
+              </form>
+            </section>
+
+            <section>
+              <div class="section-label first">Comments</div>
+              <form class="comment-form">
+                <textarea name="body" rows="2" maxlength="2000" placeholder="Add a comment…" required></textarea>
+                <div class="comment-actions">
+                  <label class="check"><input name="counts_as_progress" type="checkbox"> Counts as progress</label>
+                  <button type="submit">Comment</button>
+                </div>
+              </form>
+              <ul class="compact-list comments">
+                {% for comment in task.comments %}
+                <li>{{ comment.body }} <time>{{ comment.created_at[:10] }}</time></li>
+                {% else %}<li class="muted empty-note">No comments</li>{% endfor %}
+              </ul>
+
+              <div class="section-label">Subtask</div>
+              <form class="inline-form add-subtask-form">
+                <input name="title" maxlength="200" placeholder="Add subtask…" required>
+                <button type="submit">Add</button>
+              </form>
+            </section>
+          </div>
+        </div>
+      </article>
+      {% else %}
+      <div class="empty-state">No tasks yet. Add one above.</div>
+      {% endfor %}
+    </section>
+  </main>
+  <div id="toast" role="status" aria-live="polite"></div>
+</body>
+</html>
+
