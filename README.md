@@ -31,3 +31,12 @@ pytest --basetemp=.pytest-tmp
 
 The app initializes its schema automatically. Task-list loads reconcile active date labels at most once per minute, and an open browser checks for local midnight once per minute.
 
+## One-click launcher (Windows)
+
+Double-click `Start Aur Bataao.cmd` in the project folder. It opens
+<http://127.0.0.1:8080> in the default browser and keeps the local server running
+in a terminal window. Close that terminal window to stop the app.
+
+For desktop access, right-click the launcher, choose **Show more options → Send
+to → Desktop (create shortcut)**, and optionally set the shortcut's **Run**
+property to **Minimized**.
