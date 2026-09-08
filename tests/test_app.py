@@ -296,6 +296,22 @@ def test_index_renders_compact_task_ui(client):
     assert b'+ Progress' not in response.data
 
 
+def test_index_shows_task_labels_in_collapsed_view_and_filter(client):
+    task = create_task(client, "Plan release")
+    assert client.post(
+        f"/api/tasks/{task['id']}/labels", json={"name": "launch"}
+    ).status_code == 201
+
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert b'id="label-filter"' in response.data
+    assert b'<option value="1">launch</option>' in response.data
+    assert b'class="task-label-list"' in response.data
+    assert b'class="label-chip task-label-filter manual"' in response.data
+    assert b'data-label-ids="1"' in response.data
+
+
 def test_create_task_with_attachment_and_remove_it(client):
     image_bytes = b"fake-png-content"
     response = client.post(

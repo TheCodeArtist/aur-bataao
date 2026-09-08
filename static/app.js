@@ -145,8 +145,8 @@ async function uploadTaskAttachments(zone, files) {
 }
 
 function renderLabels(row, labels) {
-  const list = row.querySelector(".label-list");
-  list.replaceChildren(...labels.map((label) => {
+  const detailList = row.querySelector(".task-details .label-list");
+  detailList.replaceChildren(...labels.map((label) => {
     const chip = document.createElement("span");
     chip.className = `label-chip ${label.type}`;
     chip.dataset.labelId = label.id;
@@ -160,6 +160,21 @@ function renderLabels(row, labels) {
     chip.append(button);
     return chip;
   }));
+
+  const summaryList = row.querySelector(".task-label-list");
+  summaryList.replaceChildren(...labels.map((label) => {
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = `label-chip task-label-filter ${label.type}`;
+    chip.dataset.labelId = label.id;
+    chip.title = `Show tasks labelled ${label.name}`;
+    chip.setAttribute("aria-label", `Filter tasks by ${label.name}`);
+    chip.setAttribute("aria-pressed", "false");
+    chip.textContent = label.name;
+    return chip;
+  }));
+  row.dataset.labelIds = labels.map((label) => label.id).join(" ");
+  syncLabelFilterOptions();
 }
 
 function applyTask(row, task) {
@@ -222,6 +237,13 @@ document.addEventListener("click", async (event) => {
     return;
   }
 
+  const labelFilter = event.target.closest(".task-label-filter");
+  if (labelFilter) {
+    document.querySelector("#label-filter").value = labelFilter.dataset.labelId;
+    applyFilters();
+    return;
+  }
+
   const removeLabel = event.target.closest(".remove-label");
   if (removeLabel) {
     const row = taskRow(removeLabel);
@@ -230,6 +252,13 @@ document.addEventListener("click", async (event) => {
     try {
       await api(`/api/tasks/${row.dataset.taskId}/labels/${chip.dataset.labelId}`, { method: "DELETE" });
       chip.remove();
+      const summaryChip = row.querySelector(`.task-label-filter[data-label-id="${chip.dataset.labelId}"]`);
+      if (summaryChip) summaryChip.remove();
+      row.dataset.labelIds = [...row.querySelectorAll(".task-label-filter")]
+        .map((label) => label.dataset.labelId)
+        .join(" ");
+      syncLabelFilterOptions();
+      applyFilters();
     } catch (error) {
       chip.hidden = false;
       notify(error.message, true);
@@ -445,20 +474,43 @@ document.querySelectorAll(".comment-form").forEach((form) => {
   });
 });
 
-const filterControls = ["#search-filter", "#status-filter", "#overdue-filter", "#stalled-filter"].map((selector) => document.querySelector(selector));
+const filterControls = ["#search-filter", "#status-filter", "#label-filter", "#overdue-filter", "#stalled-filter"].map((selector) => document.querySelector(selector));
+function syncLabelFilterOptions() {
+  const labelFilter = document.querySelector("#label-filter");
+  const selectedLabel = labelFilter.value;
+  const labels = new Map();
+  document.querySelectorAll(".task-label-filter").forEach((label) => {
+    labels.set(label.dataset.labelId, label.textContent.trim());
+  });
+  const options = [...labels.entries()]
+    .sort((first, second) => first[1].localeCompare(second[1]))
+    .map(([id, name]) => new Option(name, id));
+  labelFilter.replaceChildren(new Option("All labels", ""), ...options);
+  labelFilter.value = labels.has(selectedLabel) ? selectedLabel : "";
+}
+
 function applyFilters() {
   const query = filterControls[0].value.trim().toLowerCase();
   const status = filterControls[1].value;
-  const overdueOnly = filterControls[2].checked;
-  const stalledOnly = filterControls[3].checked;
+  const label = filterControls[2].value;
+  const overdueOnly = filterControls[3].checked;
+  const stalledOnly = filterControls[4].checked;
+  let visibleTasks = 0;
   document.querySelectorAll(".task-row").forEach((row) => {
     row.hidden = Boolean(
       (query && !row.dataset.title.includes(query)) ||
       (status && row.dataset.status !== status) ||
+      (label && !row.dataset.labelIds.split(" ").includes(label)) ||
       (overdueOnly && row.dataset.overdue !== "true") ||
       (stalledOnly && row.dataset.stalled !== "true")
     );
+    if (!row.hidden) visibleTasks += 1;
+    row.querySelectorAll(".task-label-filter").forEach((chip) => {
+      chip.setAttribute("aria-pressed", String(Boolean(label) && chip.dataset.labelId === label));
+    });
   });
+  const emptyState = document.querySelector("#filter-empty-state");
+  if (emptyState) emptyState.hidden = visibleTasks !== 0;
 }
 filterControls.forEach((control) => control.addEventListener("input", applyFilters));
 

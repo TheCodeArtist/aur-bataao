@@ -34,6 +34,12 @@
         <option value="blocked">Blocked</option>
         <option value="done">Done</option>
       </select>
+      <select id="label-filter" aria-label="Filter by label">
+        <option value="">All labels</option>
+        {% for label in label_choices %}
+        <option value="{{ label.id }}">{{ label.name }}</option>
+        {% endfor %}
+      </select>
       <label class="check"><input id="overdue-filter" type="checkbox"> Overdue</label>
       <label class="check"><input id="stalled-filter" type="checkbox"> Stalled</label>
     </section>
@@ -45,12 +51,27 @@
         data-task-id="{{ task.id }}"
         data-status="{{ task.status }}"
         data-title="{{ task.title|lower }}"
+        data-label-ids="{{ task.labels|map(attribute='id')|join(' ') }}"
         data-overdue="{{ 'true' if task.overdue else 'false' }}"
         data-stalled="{{ 'true' if task.stalled else 'false' }}"
       >
         <div class="task-main">
           <button class="icon toggle-details" type="button" aria-expanded="false" aria-label="Show task details">›</button>
-          <input class="task-title" data-field="title" value="{{ task.title }}" maxlength="200" aria-label="Task title">
+          <div class="task-summary">
+            <input class="task-title" data-field="title" value="{{ task.title }}" maxlength="200" aria-label="Task title">
+            <div class="task-label-list" aria-label="Labels for {{ task.title }}">
+              {% for label in task.labels %}
+              <button
+                type="button"
+                class="label-chip task-label-filter {{ label.type }}"
+                data-label-id="{{ label.id }}"
+                title="Show tasks labelled {{ label.name }}"
+                aria-label="Filter tasks by {{ label.name }}"
+                aria-pressed="false"
+              >{{ label.name }}</button>
+              {% endfor %}
+            </div>
+          </div>
           <div class="badges">
             {% if task.overdue %}<span class="badge danger derived-badge overdue-badge">overdue</span>{% endif %}
             {% if task.stalled %}<span class="badge warning derived-badge stalled-badge">stalled</span>{% endif %}
@@ -198,6 +219,7 @@
       {% else %}
       <div class="empty-state">No tasks yet. Create one with <strong>New task</strong>.</div>
       {% endfor %}
+      {% if tasks %}<div id="filter-empty-state" class="empty-state" hidden>No tasks match these filters.</div>{% endif %}
     </section>
   </main>
 

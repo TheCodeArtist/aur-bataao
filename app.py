@@ -501,10 +501,19 @@ def register_routes(app: Flask) -> None:
     def index():
         maybe_reconcile()
         tasks, choices = load_tasks()
+        label_choices = sorted(
+            {
+                label["id"]: label
+                for task in tasks
+                for label in task["labels"]
+            }.values(),
+            key=lambda label: (label["type"], label["name"].casefold()),
+        )
         return render_template(
             "index.html",
             tasks=tasks,
             task_choices=choices,
+            label_choices=label_choices,
             status_labels=STATUS_LABELS,
             timezone_name=current_app.config["USER_TIMEZONE"],
             today=datetime.now(current_app.config["TZINFO"]).date().isoformat(),
