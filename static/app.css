@@ -79,6 +79,7 @@ body:has(.new-task-dialog[open]) { overflow: hidden; }
 .task-list[data-sort="smart"] .task-main { grid-template-columns: 24px minmax(180px, 1fr) auto 116px 136px; }
 .task-list[data-sort="smart"] .rank-handle { display: none; }
 .task-row { border: 1px solid var(--line); border-left: 3px solid #abb4bf; border-radius: var(--radius); background: var(--panel); box-shadow: 0 1px 1px rgb(25 35 45 / 3%); }
+.task-row.is-newly-created:not(.is-dragging) { animation: newly-created-task 3600ms ease-out; }
 .task-row.is-dragging { opacity: 0.42; box-shadow: 0 5px 16px rgb(25 35 45 / 16%); }
 .task-row.status-in_progress { border-left-color: #3d70d8; }
 .task-row.status-blocked { border-left-color: #c67060; }
@@ -165,6 +166,20 @@ button.task-label-filter[aria-pressed="true"] { color: white; background: var(--
 #toast { position: fixed; right: 14px; bottom: 14px; z-index: 10; max-width: 360px; padding: 8px 11px; border-radius: 6px; color: white; background: #243142; box-shadow: 0 4px 16px rgb(0 0 0 / 18%); opacity: 0; transform: translateY(5px); pointer-events: none; transition: 150ms ease; }
 #toast.show { opacity: 1; transform: translateY(0); }
 #toast.error { background: #932f2f; }
+
+@keyframes newly-created-task {
+  0% { background: var(--panel); box-shadow: 0 1px 1px rgb(25 35 45 / 3%); }
+  12%, 32% { background: var(--accent-soft); box-shadow: 0 0 0 3px rgb(40 89 197 / 16%), 0 2px 8px rgb(40 89 197 / 10%); }
+  100% { background: var(--panel); box-shadow: 0 1px 1px rgb(25 35 45 / 3%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .task-row.is-newly-created:not(.is-dragging) {
+    animation: none;
+    background: var(--accent-soft);
+    box-shadow: 0 0 0 2px rgb(40 89 197 / 16%);
+  }
+}
 
 @media (max-width: 850px) {
   .task-main { grid-template-columns: 24px 24px minmax(150px, 1fr) 112px; }

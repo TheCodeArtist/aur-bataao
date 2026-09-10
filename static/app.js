@@ -2,6 +2,7 @@ const toast = document.querySelector("#toast");
 const maxAttachmentBytes = Number(document.body.dataset.maxAttachmentBytes);
 const maxAttachmentsPerTask = Number(document.body.dataset.maxAttachments);
 const maxUploadBytes = Number(document.body.dataset.maxUploadBytes);
+const newlyCreatedTaskStorageKey = "aur-bataao-newly-created-task";
 let toastTimer;
 
 function notify(message, error = false) {
@@ -440,7 +441,10 @@ newTaskForm.addEventListener("submit", async (event) => {
     formData.append("attachments", file, uploadFilename(file, index));
   });
   try {
-    await api("/api/tasks", { method: "POST", body: formData });
+    const result = await api("/api/tasks", { method: "POST", body: formData });
+    try {
+      sessionStorage.setItem(newlyCreatedTaskStorageKey, String(result.task.id));
+    } catch (_) { /* Storage can be unavailable in privacy modes. */ }
     location.reload();
   } catch (error) {
     newTaskForm.removeAttribute("aria-busy");
@@ -747,6 +751,36 @@ function setSortMode(value, persist = true) {
   sortTasks();
 }
 
+function emphasizeNewlyCreatedTask() {
+  let taskId = "";
+  try {
+    taskId = sessionStorage.getItem(newlyCreatedTaskStorageKey) || "";
+    sessionStorage.removeItem(newlyCreatedTaskStorageKey);
+  } catch (_) { /* Storage can be unavailable in privacy modes. */ }
+  if (!taskId) return;
+
+  const row = taskRows().find((candidate) => candidate.dataset.taskId === taskId);
+  if (!row) return;
+  if (row.hidden) {
+    notify("Task added — hidden by current filters");
+    return;
+  }
+
+  const bounds = row.getBoundingClientRect();
+  const isOutsideViewport = bounds.top < 0 || bounds.bottom > window.innerHeight;
+  const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  if (isOutsideViewport) {
+    row.scrollIntoView({
+      behavior: reduceMotion ? "auto" : "smooth",
+      block: "nearest",
+    });
+  }
+
+  row.classList.add("is-newly-created");
+  setTimeout(() => row.classList.remove("is-newly-created"), 3600);
+  notify("Task added");
+}
+
 function setReorderInFlight(value) {
   reorderInFlight = value;
   updateRankPresentation();
@@ -875,6 +909,7 @@ taskList.addEventListener("keydown", async (event) => {
 
 sortControl.addEventListener("change", () => setSortMode(sortControl.value));
 setSortMode(savedSortPreference(), false);
+emphasizeNewlyCreatedTask();
 
 // Reconcile within a minute of midnight in the configured user timezone.
 function dateInConfiguredTimezone() {
