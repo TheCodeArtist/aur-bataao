@@ -662,9 +662,9 @@ function applyFilters() {
   });
   const emptyState = document.querySelector("#filter-empty-state");
   if (emptyState) emptyState.hidden = visibleTasks !== 0;
+  updateRankPresentation();
 }
 [searchFilter, overdueFilter, stalledFilter].forEach((control) => control.addEventListener("input", applyFilters));
-applyFilters();
 
 const taskList = document.querySelector("#task-list");
 const sortControl = document.querySelector("#sort-control");
@@ -703,22 +703,22 @@ function compareSmart(first, second) {
 
 function updateRankPresentation() {
   const rankMode = sortControl.value === "rank";
+  const visibleRows = taskRows().filter((row) => !row.hidden);
   const ranksByTask = new Map(
-    taskRows().sort(compareRank).map((row, index) => [row.dataset.taskId, index + 1]),
+    visibleRows.sort(compareRank).map((row, index) => [row.dataset.taskId, index + 1]),
   );
   taskRows().forEach((row) => {
     const rank = ranksByTask.get(row.dataset.taskId);
     const badge = row.querySelector(".rank-badge");
     const handle = row.querySelector(".rank-handle");
     const title = row.querySelector(".task-title").value;
-    badge.textContent = `#${rank}`;
-    badge.hidden = !rankMode;
-    handle.disabled = !rankMode || reorderInFlight;
-    handle.draggable = rankMode && !reorderInFlight;
-    handle.setAttribute(
-      "aria-label",
-      `Move ${title}, currently rank ${rank}. Use the up and down arrow keys`,
-    );
+    badge.textContent = rank === undefined ? "" : `#${rank}`;
+    badge.hidden = !rankMode || rank === undefined;
+    handle.disabled = !rankMode || rank === undefined || reorderInFlight;
+    handle.draggable = rankMode && rank !== undefined && !reorderInFlight;
+    handle.setAttribute("aria-label", rank === undefined
+      ? `Move ${title} by rank`
+      : `Move ${title}, currently rank ${rank}. Use the up and down arrow keys`);
   });
 }
 
@@ -908,6 +908,7 @@ taskList.addEventListener("keydown", async (event) => {
 });
 
 sortControl.addEventListener("change", () => setSortMode(sortControl.value));
+applyFilters();
 setSortMode(savedSortPreference(), false);
 emphasizeNewlyCreatedTask();
 

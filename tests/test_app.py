@@ -439,6 +439,7 @@ def test_removed_automatic_label_waits_for_later_progress(client, app):
 def test_index_renders_compact_task_ui(client):
     create_task(client, "Visible task")
     response = client.get("/")
+    page = response.get_data(as_text=True)
     assert response.status_code == 200
     assert b"Visible task" in response.data
     assert b"task-list" in response.data
@@ -452,6 +453,10 @@ def test_index_renders_compact_task_ui(client):
     assert b'Counts as progress' in response.data
     assert b'record-progress' not in response.data
     assert b'+ Progress' not in response.data
+    task_main = page.split('<div class="task-main">', 1)[1].split("</div>", 1)[0]
+    assert task_main.index('class="rank-handle"') < task_main.index(
+        'class="badge rank-badge"'
+    ) < task_main.index('class="icon toggle-details"')
 
 
 def test_index_count_excludes_done_tasks(client):

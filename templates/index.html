@@ -101,6 +101,7 @@
             aria-label="Move {{ task.title }} by rank"
             title="Drag to change rank; use arrow keys for keyboard control"
           >⠿</button>
+          <span class="badge rank-badge" aria-hidden="true" hidden></span>
           <button class="icon toggle-details" type="button" aria-expanded="false" aria-label="Show task details">›</button>
           <div class="task-summary">
             <input class="task-title" data-field="title" value="{{ task.title }}" maxlength="200" aria-label="Task title">
@@ -118,7 +119,6 @@
             </div>
           </div>
           <div class="badges">
-            <span class="badge rank-badge" hidden></span>
             {% if task.overdue %}<span class="badge danger derived-badge overdue-badge">overdue</span>{% endif %}
             {% if task.stalled %}<span class="badge warning derived-badge stalled-badge">stalled</span>{% endif %}
             {% set unresolved = task.blocked_by|rejectattr('resolved')|list %}
