@@ -174,17 +174,53 @@ function renderLabels(row, labels) {
     return chip;
   }));
   row.dataset.labelIds = labels.map((label) => label.id).join(" ");
+  syncTaskLabelPicker(row, labels);
   syncLabelFilterOptions();
+}
+
+function syncTaskLabelPicker(row, labels) {
+  const picker = row.querySelector(".task-label-picker");
+  if (!picker) return;
+  const assignedLabels = new Set(labels.map((label) => String(label.id)));
+  picker.querySelectorAll("[data-task-label-option]").forEach((checkbox) => {
+    checkbox.checked = assignedLabels.has(checkbox.value);
+  });
+  updateMultiSelect(picker);
+}
+
+function removeRenderedLabel(row, labelId) {
+  row.querySelector(`.task-details .label-chip[data-label-id="${labelId}"]`)?.remove();
+  row.querySelector(`.task-label-filter[data-label-id="${labelId}"]`)?.remove();
+  row.dataset.labelIds = [...row.querySelectorAll(".task-label-filter")]
+    .map((label) => label.dataset.labelId)
+    .join(" ");
+  const pickerOption = row.querySelector(`.task-label-picker [data-task-label-option][value="${labelId}"]`);
+  if (pickerOption) pickerOption.checked = false;
+  if (pickerOption) updateMultiSelect(pickerOption.closest(".task-label-picker"));
+  syncLabelFilterOptions();
+  applyFilters();
 }
 
 function applyTask(row, task) {
   row.dataset.status = task.status;
+  row.dataset.dueDate = task.due_date || "";
   row.dataset.overdue = String(Boolean(task.overdue));
   row.dataset.stalled = String(Boolean(task.stalled));
   row.classList.remove("status-todo", "status-in_progress", "status-blocked", "status-done");
   row.classList.add(`status-${task.status}`);
   if (task.labels) renderLabels(row, task.labels);
+  updateActiveTaskCount();
   applyFilters();
+  sortTasks();
+}
+
+function updateActiveTaskCount() {
+  const countLabel = document.querySelector("#active-task-count");
+  if (!countLabel) return;
+  const activeTaskCount = [...document.querySelectorAll(".task-row")]
+    .filter((task) => task.dataset.status !== "done").length;
+  const timezone = document.body.dataset.timezone;
+  countLabel.textContent = `${activeTaskCount} ${activeTaskCount === 1 ? "task" : "tasks"} · ${timezone}`;
 }
 
 async function patchControl(control) {
@@ -239,7 +275,11 @@ document.addEventListener("click", async (event) => {
 
   const labelFilter = event.target.closest(".task-label-filter");
   if (labelFilter) {
-    document.querySelector("#label-filter").value = labelFilter.dataset.labelId;
+    const labelMenu = document.querySelector("#label-filter");
+    labelMenu.querySelectorAll("[data-filter-value]").forEach((checkbox) => {
+      checkbox.checked = checkbox.value === labelFilter.dataset.labelId;
+    });
+    updateMultiSelect(labelMenu);
     applyFilters();
     return;
   }
@@ -251,14 +291,7 @@ document.addEventListener("click", async (event) => {
     chip.hidden = true;
     try {
       await api(`/api/tasks/${row.dataset.taskId}/labels/${chip.dataset.labelId}`, { method: "DELETE" });
-      chip.remove();
-      const summaryChip = row.querySelector(`.task-label-filter[data-label-id="${chip.dataset.labelId}"]`);
-      if (summaryChip) summaryChip.remove();
-      row.dataset.labelIds = [...row.querySelectorAll(".task-label-filter")]
-        .map((label) => label.dataset.labelId)
-        .join(" ");
-      syncLabelFilterOptions();
-      applyFilters();
+      removeRenderedLabel(row, chip.dataset.labelId);
     } catch (error) {
       chip.hidden = false;
       notify(error.message, true);
@@ -447,6 +480,35 @@ document.querySelectorAll(".add-label-form").forEach((form) => {
   });
 });
 
+document.querySelectorAll(".task-label-picker").forEach((picker) => {
+  picker.addEventListener("change", async (event) => {
+    const checkbox = event.target.closest("[data-task-label-option]");
+    if (!checkbox) return;
+    const row = taskRow(picker);
+    const adding = checkbox.checked;
+    checkbox.disabled = true;
+    updateMultiSelect(picker);
+    try {
+      if (adding) {
+        const result = await api(`/api/tasks/${row.dataset.taskId}/labels`, {
+          method: "POST",
+          body: JSON.stringify({ name: checkbox.dataset.labelName }),
+        });
+        applyTask(row, result.task);
+      } else {
+        await api(`/api/tasks/${row.dataset.taskId}/labels/${checkbox.value}`, { method: "DELETE" });
+        removeRenderedLabel(row, checkbox.value);
+      }
+    } catch (error) {
+      checkbox.checked = !adding;
+      notify(error.message, true);
+    } finally {
+      checkbox.disabled = false;
+      updateMultiSelect(picker);
+    }
+  });
+});
+
 document.querySelectorAll(".add-blocker-form").forEach((form) => {
   form.addEventListener("submit", (event) => {
     event.preventDefault();
@@ -474,45 +536,345 @@ document.querySelectorAll(".comment-form").forEach((form) => {
   });
 });
 
-const filterControls = ["#search-filter", "#status-filter", "#label-filter", "#overdue-filter", "#stalled-filter"].map((selector) => document.querySelector(selector));
+const searchFilter = document.querySelector("#search-filter");
+const statusFilter = document.querySelector("#status-filter");
+const labelFilter = document.querySelector("#label-filter");
+const overdueFilter = document.querySelector("#overdue-filter");
+const stalledFilter = document.querySelector("#stalled-filter");
+
+function multiSelectOptions(filter) {
+  return [...filter.querySelectorAll("[data-filter-value], [data-task-label-option]")];
+}
+
+function selectedFilterValues(filter) {
+  return new Set(
+    multiSelectOptions(filter)
+      .filter((checkbox) => checkbox.checked)
+      .map((checkbox) => checkbox.value),
+  );
+}
+
+function updateMultiSelect(filter) {
+  const options = multiSelectOptions(filter);
+  const selectedCount = options.filter((checkbox) => checkbox.checked).length;
+  const allSelected = options.length > 0 && selectedCount === options.length;
+  const selectAll = filter.querySelector("[data-select-all]");
+  if (selectAll) {
+    selectAll.checked = allSelected;
+    selectAll.indeterminate = selectedCount > 0 && !allSelected;
+  }
+
+  let summary = filter.dataset.allLabel;
+  if (!allSelected) {
+    if (selectedCount === 0) {
+      summary = filter.dataset.emptyLabel;
+    } else {
+      summary = `${selectedCount} ${selectedCount === 1 ? filter.dataset.singular : filter.dataset.plural}`;
+    }
+  }
+  filter.querySelector(".multi-select-summary").textContent = summary;
+}
+
+document.querySelectorAll(".multi-select").forEach((select) => {
+  updateMultiSelect(select);
+  select.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      select.open = false;
+      select.querySelector("summary").focus();
+    }
+  });
+});
+
+document.querySelectorAll(".filter-multi-select").forEach((filter) => {
+  filter.addEventListener("change", (event) => {
+    if (event.target.matches("[data-select-all]")) {
+      multiSelectOptions(filter).forEach((checkbox) => {
+        checkbox.checked = event.target.checked;
+      });
+    }
+    updateMultiSelect(filter);
+    applyFilters();
+  });
+});
+
+document.addEventListener("click", (event) => {
+  document.querySelectorAll(".multi-select[open]").forEach((filter) => {
+    if (!filter.contains(event.target)) filter.open = false;
+  });
+});
+
 function syncLabelFilterOptions() {
-  const labelFilter = document.querySelector("#label-filter");
-  const selectedLabel = labelFilter.value;
+  const currentOptions = multiSelectOptions(labelFilter);
+  const selectedLabels = selectedFilterValues(labelFilter);
+  const hadAllSelected = currentOptions.every((checkbox) => checkbox.checked);
   const labels = new Map();
   document.querySelectorAll(".task-label-filter").forEach((label) => {
     labels.set(label.dataset.labelId, label.textContent.trim());
   });
-  const options = [...labels.entries()]
-    .sort((first, second) => first[1].localeCompare(second[1]))
-    .map(([id, name]) => new Option(name, id));
-  labelFilter.replaceChildren(new Option("All labels", ""), ...options);
-  labelFilter.value = labels.has(selectedLabel) ? selectedLabel : "";
+  const sortedLabels = [...labels.entries()]
+    .sort((first, second) => first[1].localeCompare(second[1]));
+  const selectedLabelStillExists = sortedLabels.some(([id]) => selectedLabels.has(id));
+  const resetMissingSelection = selectedLabels.size > 0 && !selectedLabelStillExists;
+  const options = sortedLabels
+    .map(([id, name]) => {
+      const option = document.createElement("label");
+      option.className = "multi-select-option";
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.value = id;
+      checkbox.dataset.filterValue = "";
+      checkbox.checked = hadAllSelected || resetMissingSelection || selectedLabels.has(id);
+      const text = document.createElement("span");
+      text.textContent = name;
+      option.append(checkbox, text);
+      return option;
+    });
+  labelFilter.querySelector(".multi-select-options").replaceChildren(...options);
+  updateMultiSelect(labelFilter);
 }
 
 function applyFilters() {
-  const query = filterControls[0].value.trim().toLowerCase();
-  const status = filterControls[1].value;
-  const label = filterControls[2].value;
-  const overdueOnly = filterControls[3].checked;
-  const stalledOnly = filterControls[4].checked;
+  const query = searchFilter.value.trim().toLowerCase();
+  const statuses = selectedFilterValues(statusFilter);
+  const labels = selectedFilterValues(labelFilter);
+  const labelOptions = multiSelectOptions(labelFilter);
+  const labelsAreFiltered = labels.size !== labelOptions.length;
+  const overdueOnly = overdueFilter.checked;
+  const stalledOnly = stalledFilter.checked;
   let visibleTasks = 0;
   document.querySelectorAll(".task-row").forEach((row) => {
+    const rowLabels = row.dataset.labelIds.split(" ").filter(Boolean);
     row.hidden = Boolean(
       (query && !row.dataset.title.includes(query)) ||
-      (status && row.dataset.status !== status) ||
-      (label && !row.dataset.labelIds.split(" ").includes(label)) ||
+      !statuses.has(row.dataset.status) ||
+      (labelsAreFiltered && !rowLabels.some((label) => labels.has(label))) ||
       (overdueOnly && row.dataset.overdue !== "true") ||
       (stalledOnly && row.dataset.stalled !== "true")
     );
     if (!row.hidden) visibleTasks += 1;
     row.querySelectorAll(".task-label-filter").forEach((chip) => {
-      chip.setAttribute("aria-pressed", String(Boolean(label) && chip.dataset.labelId === label));
+      chip.setAttribute("aria-pressed", String(labelsAreFiltered && labels.has(chip.dataset.labelId)));
     });
   });
   const emptyState = document.querySelector("#filter-empty-state");
   if (emptyState) emptyState.hidden = visibleTasks !== 0;
 }
-filterControls.forEach((control) => control.addEventListener("input", applyFilters));
+[searchFilter, overdueFilter, stalledFilter].forEach((control) => control.addEventListener("input", applyFilters));
+applyFilters();
+
+const taskList = document.querySelector("#task-list");
+const sortControl = document.querySelector("#sort-control");
+const taskSortStorageKey = "aur-bataao-task-sort";
+const smartStatusOrder = { in_progress: 0, blocked: 1, todo: 2, done: 3 };
+let reorderInFlight = false;
+let dragState = null;
+
+function taskRows() {
+  return [...taskList.children].filter((child) => child.classList.contains("task-row"));
+}
+
+function renderTaskOrder(rows) {
+  const anchor = [...taskList.children]
+    .find((child) => !child.classList.contains("task-row")) || null;
+  rows.forEach((row) => taskList.insertBefore(row, anchor));
+}
+
+function compareRank(first, second) {
+  const firstRank = BigInt(first.dataset.rankKey);
+  const secondRank = BigInt(second.dataset.rankKey);
+  if (firstRank < secondRank) return -1;
+  if (firstRank > secondRank) return 1;
+  return Number(first.dataset.taskId) - Number(second.dataset.taskId);
+}
+
+function compareSmart(first, second) {
+  const statusDifference = smartStatusOrder[first.dataset.status] - smartStatusOrder[second.dataset.status];
+  if (statusDifference) return statusDifference;
+  const firstDueDate = first.dataset.dueDate || "9999-12-31";
+  const secondDueDate = second.dataset.dueDate || "9999-12-31";
+  const dueDateDifference = firstDueDate.localeCompare(secondDueDate);
+  if (dueDateDifference) return dueDateDifference;
+  return Number(second.dataset.taskId) - Number(first.dataset.taskId);
+}
+
+function updateRankPresentation() {
+  const rankMode = sortControl.value === "rank";
+  const ranksByTask = new Map(
+    taskRows().sort(compareRank).map((row, index) => [row.dataset.taskId, index + 1]),
+  );
+  taskRows().forEach((row) => {
+    const rank = ranksByTask.get(row.dataset.taskId);
+    const badge = row.querySelector(".rank-badge");
+    const handle = row.querySelector(".rank-handle");
+    const title = row.querySelector(".task-title").value;
+    badge.textContent = `#${rank}`;
+    badge.hidden = !rankMode;
+    handle.disabled = !rankMode || reorderInFlight;
+    handle.draggable = rankMode && !reorderInFlight;
+    handle.setAttribute(
+      "aria-label",
+      `Move ${title}, currently rank ${rank}. Use the up and down arrow keys`,
+    );
+  });
+}
+
+function sortTasks() {
+  const rows = taskRows();
+  rows.sort(sortControl.value === "rank" ? compareRank : compareSmart);
+  renderTaskOrder(rows);
+  updateRankPresentation();
+}
+
+function saveSortPreference(value) {
+  try {
+    localStorage.setItem(taskSortStorageKey, value);
+  } catch (_) { /* Storage can be unavailable in privacy modes. */ }
+}
+
+function savedSortPreference() {
+  try {
+    const value = localStorage.getItem(taskSortStorageKey);
+    return value === "rank" ? "rank" : "smart";
+  } catch (_) {
+    return "smart";
+  }
+}
+
+function setSortMode(value, persist = true) {
+  sortControl.value = value === "rank" ? "rank" : "smart";
+  taskList.dataset.sort = sortControl.value;
+  if (persist) saveSortPreference(sortControl.value);
+  sortTasks();
+}
+
+function setReorderInFlight(value) {
+  reorderInFlight = value;
+  updateRankPresentation();
+}
+
+function sameTaskOrder(first, second) {
+  return first.length === second.length
+    && first.every((row, index) => row === second[index]);
+}
+
+function mergeVisibleOrder(snapshot, visibleOrder) {
+  let visibleIndex = 0;
+  return snapshot.map((row) => (row.hidden ? row : visibleOrder[visibleIndex++]));
+}
+
+async function persistRankMove(row, previousOrder) {
+  const orderedRows = taskRows();
+  const position = orderedRows.indexOf(row);
+  const afterTaskId = position > 0 ? Number(orderedRows[position - 1].dataset.taskId) : null;
+  const beforeTaskId = position < orderedRows.length - 1
+    ? Number(orderedRows[position + 1].dataset.taskId)
+    : null;
+  setReorderInFlight(true);
+  try {
+    const result = await api(`/api/tasks/${row.dataset.taskId}/rank`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        after_task_id: afterTaskId,
+        before_task_id: beforeTaskId,
+      }),
+    });
+    result.ranks.forEach((rank) => {
+      const rankedRow = taskList.querySelector(`.task-row[data-task-id="${rank.id}"]`);
+      if (rankedRow) rankedRow.dataset.rankKey = rank.rank_key;
+    });
+    sortTasks();
+    const currentRank = taskRows().sort(compareRank).indexOf(row) + 1;
+    notify(`Moved to rank ${currentRank}`);
+  } catch (error) {
+    renderTaskOrder(previousOrder);
+    sortTasks();
+    notify(error.message, true);
+  } finally {
+    setReorderInFlight(false);
+    row.querySelector(".rank-handle").focus();
+  }
+}
+
+function dragAfterRow(pointerY, draggedRow) {
+  return taskRows()
+    .filter((row) => row !== draggedRow && !row.hidden)
+    .reduce((closest, row) => {
+      const box = row.getBoundingClientRect();
+      const offset = pointerY - box.top - box.height / 2;
+      return offset < 0 && offset > closest.offset ? { offset, row } : closest;
+    }, { offset: Number.NEGATIVE_INFINITY, row: null }).row;
+}
+
+taskList.addEventListener("dragstart", (event) => {
+  const handle = event.target.closest(".rank-handle");
+  if (!handle || handle.disabled || sortControl.value !== "rank") {
+    event.preventDefault();
+    return;
+  }
+  const row = taskRow(handle);
+  dragState = { row, snapshot: taskRows(), dropped: false };
+  event.dataTransfer.effectAllowed = "move";
+  event.dataTransfer.setData("text/plain", row.dataset.taskId);
+  row.classList.add("is-dragging");
+});
+
+taskList.addEventListener("dragover", (event) => {
+  if (!dragState) return;
+  event.preventDefault();
+  event.dataTransfer.dropEffect = "move";
+  const afterRow = dragAfterRow(event.clientY, dragState.row);
+  if (afterRow) {
+    taskList.insertBefore(dragState.row, afterRow);
+    return;
+  }
+  const lastVisibleRow = taskRows()
+    .filter((row) => row !== dragState.row && !row.hidden)
+    .at(-1);
+  if (lastVisibleRow) lastVisibleRow.after(dragState.row);
+});
+
+taskList.addEventListener("drop", (event) => {
+  if (!dragState) return;
+  event.preventDefault();
+  dragState.dropped = true;
+});
+
+taskList.addEventListener("dragend", async () => {
+  if (!dragState) return;
+  const state = dragState;
+  dragState = null;
+  state.row.classList.remove("is-dragging");
+  if (!state.dropped) {
+    renderTaskOrder(state.snapshot);
+    return;
+  }
+
+  const visibleOrder = taskRows().filter((row) => !row.hidden);
+  const mergedOrder = mergeVisibleOrder(state.snapshot, visibleOrder);
+  renderTaskOrder(mergedOrder);
+  if (!sameTaskOrder(state.snapshot, mergedOrder)) {
+    await persistRankMove(state.row, state.snapshot);
+  }
+});
+
+taskList.addEventListener("keydown", async (event) => {
+  const handle = event.target.closest(".rank-handle");
+  if (!handle || handle.disabled || !["ArrowUp", "ArrowDown"].includes(event.key)) return;
+  event.preventDefault();
+  const row = taskRow(handle);
+  const snapshot = taskRows();
+  const visibleOrder = snapshot.filter((candidate) => !candidate.hidden);
+  const currentIndex = visibleOrder.indexOf(row);
+  const targetIndex = event.key === "ArrowUp" ? currentIndex - 1 : currentIndex + 1;
+  if (targetIndex < 0 || targetIndex >= visibleOrder.length) return;
+  visibleOrder.splice(currentIndex, 1);
+  visibleOrder.splice(targetIndex, 0, row);
+  renderTaskOrder(mergeVisibleOrder(snapshot, visibleOrder));
+  await persistRankMove(row, snapshot);
+});
+
+sortControl.addEventListener("change", () => setSortMode(sortControl.value));
+setSortMode(savedSortPreference(), false);
 
 // Reconcile within a minute of midnight in the configured user timezone.
 function dateInConfiguredTimezone() {

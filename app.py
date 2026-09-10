@@ -23,6 +23,9 @@ STATUS_LABELS = {
 STATUSES = set(STATUS_LABELS)
 MAX_RECONCILE_AGE_SECONDS = 60
 PREVIEWABLE_IMAGE_TYPES = {"image/gif", "image/jpeg", "image/png", "image/webp"}
+RANK_SPACING = 1024
+SQLITE_INTEGER_MIN = -(2**63)
+SQLITE_INTEGER_MAX = 2**63 - 1
 
 
 def create_app(test_config: dict[str, Any] | None = None) -> Flask:
@@ -83,8 +86,71 @@ def init_db() -> None:
     schema = Path(current_app.root_path, "schema.sql").read_text(encoding="utf-8")
     db = get_db()
     db.executescript(schema)
+    migrate_task_ranks(db)
     migrate_legacy_subtasks(db)
     db.commit()
+
+
+def _smart_ordered_task_ids(db: sqlite3.Connection) -> list[int]:
+    return [
+        row["id"]
+        for row in db.execute(
+            """
+            SELECT id FROM tasks
+            ORDER BY CASE status
+                         WHEN 'in_progress' THEN 0
+                         WHEN 'blocked' THEN 1
+                         WHEN 'todo' THEN 2
+                         ELSE 3
+                     END,
+                     COALESCE(due_date, '9999-12-31'), id DESC
+            """
+        ).fetchall()
+    ]
+
+
+def _rank_ordered_task_ids(db: sqlite3.Connection) -> list[int]:
+    return [
+        row["id"]
+        for row in db.execute(
+            "SELECT id FROM tasks ORDER BY rank_key, id"
+        ).fetchall()
+    ]
+
+
+def _rebalance_task_ranks(db: sqlite3.Connection, ordered_ids: list[int]) -> None:
+    """Assign compact unique ranks without transient uniqueness collisions."""
+    db.execute("UPDATE tasks SET rank_key = NULL")
+    db.executemany(
+        "UPDATE tasks SET rank_key = ? WHERE id = ?",
+        ((index * RANK_SPACING, task_id) for index, task_id in enumerate(ordered_ids, 1)),
+    )
+
+
+def migrate_task_ranks(db: sqlite3.Connection) -> None:
+    """Add and safely initialize persistent task ranks for existing databases."""
+    columns = {row["name"] for row in db.execute("PRAGMA table_info(tasks)").fetchall()}
+    if "rank_key" not in columns:
+        db.execute("ALTER TABLE tasks ADD COLUMN rank_key INTEGER")
+
+    ranks = db.execute("SELECT rank_key FROM tasks").fetchall()
+    rank_values = [row["rank_key"] for row in ranks]
+    if any(value is None for value in rank_values) or len(rank_values) != len(set(rank_values)):
+        _rebalance_task_ranks(db, _smart_ordered_task_ids(db))
+
+    db.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_tasks_rank_key ON tasks(rank_key)"
+    )
+
+
+def _new_task_rank_key(db: sqlite3.Connection) -> int:
+    first_rank = db.execute("SELECT MIN(rank_key) AS rank_key FROM tasks").fetchone()["rank_key"]
+    if first_rank is None:
+        return RANK_SPACING
+    if first_rank < SQLITE_INTEGER_MIN + RANK_SPACING:
+        _rebalance_task_ranks(db, _rank_ordered_task_ids(db))
+        first_rank = db.execute("SELECT MIN(rank_key) AS rank_key FROM tasks").fetchone()["rank_key"]
+    return first_rank - RANK_SPACING
 
 
 def migrate_legacy_subtasks(db: sqlite3.Connection) -> int:
@@ -509,11 +575,19 @@ def register_routes(app: Flask) -> None:
             }.values(),
             key=lambda label: (label["type"], label["name"].casefold()),
         )
+        manual_label_choices = [
+            dict(label)
+            for label in get_db().execute(
+                "SELECT id, name, type FROM labels "
+                "WHERE type = 'manual' ORDER BY name COLLATE NOCASE"
+            ).fetchall()
+        ]
         return render_template(
             "index.html",
             tasks=tasks,
             task_choices=choices,
             label_choices=label_choices,
+            manual_label_choices=manual_label_choices,
             status_labels=STATUS_LABELS,
             timezone_name=current_app.config["USER_TIMEZONE"],
             today=datetime.now(current_app.config["TZINFO"]).date().isoformat(),
@@ -544,12 +618,14 @@ def register_routes(app: Flask) -> None:
         now = utc_now()
         stored_paths: list[Path] = []
         try:
+            db.execute("BEGIN IMMEDIATE")
+            rank_key = _new_task_rank_key(db)
             cursor = db.execute(
                 """
-                INSERT INTO tasks(title, created_at, updated_at)
-                VALUES (?, ?, ?)
+                INSERT INTO tasks(rank_key, title, created_at, updated_at)
+                VALUES (?, ?, ?, ?)
                 """,
-                (title, iso_utc(now), iso_utc(now)),
+                (rank_key, title, iso_utc(now), iso_utc(now)),
             )
             task_id = cursor.lastrowid
             _record_event(db, task_id, "task_created", details={"status": "todo"}, now=now)
@@ -734,6 +810,102 @@ def register_routes(app: Flask) -> None:
                 _record_event(db, task_id, "task_updated", details={"fields": non_status}, now=now)
             db.commit()
         return jsonify(task=_serialize_task(db, _task_or_404(db, task_id)))
+
+    @app.patch("/api/tasks/<int:task_id>/rank")
+    def rank_task(task_id: int):
+        body = _json_body()
+        unknown = set(body) - {"after_task_id", "before_task_id"}
+        if unknown:
+            raise ValueError(f"Unsupported field: {sorted(unknown)[0]}")
+        if "after_task_id" not in body or "before_task_id" not in body:
+            raise ValueError("Both neighboring task fields are required")
+
+        def neighbor_id(field: str) -> int | None:
+            value = body[field]
+            if value is None:
+                return None
+            if isinstance(value, bool):
+                raise ValueError(f"Invalid {field}")
+            try:
+                parsed = int(value)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"Invalid {field}") from exc
+            if parsed <= 0 or parsed == task_id:
+                raise ValueError(f"Invalid {field}")
+            return parsed
+
+        after_id = neighbor_id("after_task_id")
+        before_id = neighbor_id("before_task_id")
+        db = get_db()
+        try:
+            db.execute("BEGIN IMMEDIATE")
+            _task_or_404(db, task_id)
+            ordered_rows = db.execute(
+                "SELECT id, rank_key FROM tasks ORDER BY rank_key, id"
+            ).fetchall()
+            remaining = [row for row in ordered_rows if row["id"] != task_id]
+            positions = {row["id"]: index for index, row in enumerate(remaining)}
+
+            if after_id is not None and after_id not in positions:
+                raise ValueError("The preceding task no longer exists")
+            if before_id is not None and before_id not in positions:
+                raise ValueError("The following task no longer exists")
+
+            if after_id is None and before_id is None:
+                if remaining:
+                    raise ValueError("Choose where to rank the task")
+                insertion_index = 0
+            elif after_id is None:
+                insertion_index = positions[before_id]
+                if insertion_index != 0:
+                    raise ValueError("Task order changed; try again")
+            elif before_id is None:
+                insertion_index = positions[after_id] + 1
+                if insertion_index != len(remaining):
+                    raise ValueError("Task order changed; try again")
+            else:
+                insertion_index = positions[before_id]
+                if positions[after_id] + 1 != insertion_index:
+                    raise ValueError("Task order changed; try again")
+
+            new_order = [row["id"] for row in remaining]
+            new_order.insert(insertion_index, task_id)
+            after_rank = remaining[insertion_index - 1]["rank_key"] if insertion_index else None
+            before_rank = remaining[insertion_index]["rank_key"] if insertion_index < len(remaining) else None
+
+            if after_rank is None and before_rank is None:
+                candidate = RANK_SPACING
+            elif after_rank is None:
+                candidate = before_rank - RANK_SPACING
+            elif before_rank is None:
+                candidate = after_rank + RANK_SPACING
+            else:
+                candidate = (after_rank + before_rank) // 2
+
+            rebalanced = not (
+                SQLITE_INTEGER_MIN <= candidate <= SQLITE_INTEGER_MAX
+                and (after_rank is None or candidate > after_rank)
+                and (before_rank is None or candidate < before_rank)
+            )
+            if rebalanced:
+                _rebalance_task_ranks(db, new_order)
+            else:
+                db.execute(
+                    "UPDATE tasks SET rank_key = ? WHERE id = ?",
+                    (candidate, task_id),
+                )
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+
+        ranks = [
+            {"id": row["id"], "rank_key": str(row["rank_key"])}
+            for row in db.execute(
+                "SELECT id, rank_key FROM tasks ORDER BY rank_key, id"
+            ).fetchall()
+        ]
+        return jsonify(ranks=ranks, rebalanced=rebalanced)
 
     @app.post("/api/tasks/<int:task_id>/comments")
     def add_comment(task_id: int):

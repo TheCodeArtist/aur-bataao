@@ -1,6 +1,6 @@
 # Aur Bataao
 
-A compact, single-user task tracker built with Flask, server-rendered HTML, vanilla JavaScript, and SQLite. New tasks are captured in a focused dialog, and every task can hold files added through the picker, drag and drop, or clipboard paste.
+A compact, single-user task tracker built with Flask, server-rendered HTML, vanilla JavaScript, and SQLite. New tasks are captured in a focused dialog, every task can hold files added through the picker, drag and drop, or clipboard paste, and rank sorting supports persistent drag or keyboard reordering.
 
 ## Run locally (Windows PowerShell)
 

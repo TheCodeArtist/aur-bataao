@@ -1,10 +1,11 @@
+import sqlite3
 from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
 
 import pytest
 
-from app import create_app, get_db, init_db, reconcile_active_labels
+from app import RANK_SPACING, create_app, get_db, init_db, reconcile_active_labels
 
 
 @pytest.fixture()
@@ -90,6 +91,160 @@ def test_legacy_subtasks_migrate_to_dependencies(client, app):
         ).fetchone()[0]
         assert migrated_child["parent_task_id"] is None
         assert relationship_count == 1
+
+
+def test_existing_database_gets_rank_column_and_preserves_smart_order(tmp_path):
+    database_path = tmp_path / "legacy.sqlite3"
+    legacy_db = sqlite3.connect(database_path)
+    legacy_db.execute(
+        """
+        CREATE TABLE tasks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            parent_task_id INTEGER REFERENCES tasks(id) ON DELETE CASCADE,
+            title TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'todo',
+            due_date TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            last_progress_at TEXT
+        )
+        """
+    )
+    timestamp = "2026-09-10T00:00:00+00:00"
+    legacy_db.executemany(
+        """
+        INSERT INTO tasks(title, status, created_at, updated_at)
+        VALUES (?, ?, ?, ?)
+        """,
+        [
+            ("Older todo", "todo", timestamp, timestamp),
+            ("In progress", "in_progress", timestamp, timestamp),
+            ("Newer todo", "todo", timestamp, timestamp),
+        ],
+    )
+    legacy_db.commit()
+    legacy_db.close()
+
+    migrated_app = create_app(
+        {
+            "TESTING": True,
+            "DATABASE": str(database_path),
+            "USER_TIMEZONE": "Asia/Kolkata",
+        }
+    )
+    with migrated_app.app_context():
+        db = get_db()
+        columns = {row["name"] for row in db.execute("PRAGMA table_info(tasks)")}
+        ranked_titles = [
+            row["title"]
+            for row in db.execute("SELECT title FROM tasks ORDER BY rank_key")
+        ]
+        ranks = [row["rank_key"] for row in db.execute("SELECT rank_key FROM tasks")]
+
+    assert "rank_key" in columns
+    assert ranked_titles == ["In progress", "Newer todo", "Older todo"]
+    assert len(ranks) == len(set(ranks))
+    assert all(rank is not None for rank in ranks)
+
+
+def test_new_tasks_receive_unique_top_ranks(client):
+    first = create_task(client, "First")
+    second = create_task(client, "Second")
+
+    assert second["rank_key"] < first["rank_key"]
+    assert first["rank_key"] - second["rank_key"] == RANK_SPACING
+
+
+def test_rank_move_changes_only_moved_task_when_gap_exists(client, app):
+    first = create_task(client, "First")
+    second = create_task(client, "Second")
+    third = create_task(client, "Third")
+    with app.app_context():
+        before = {
+            row["id"]: row["rank_key"]
+            for row in get_db().execute("SELECT id, rank_key FROM tasks")
+        }
+
+    response = client.patch(
+        f"/api/tasks/{first['id']}/rank",
+        json={"after_task_id": third["id"], "before_task_id": second["id"]},
+    )
+
+    assert response.status_code == 200
+    result = response.get_json()
+    assert result["rebalanced"] is False
+    assert [rank["id"] for rank in result["ranks"]] == [
+        third["id"],
+        first["id"],
+        second["id"],
+    ]
+    with app.app_context():
+        after = {
+            row["id"]: row["rank_key"]
+            for row in get_db().execute("SELECT id, rank_key FROM tasks")
+        }
+    assert after[third["id"]] == before[third["id"]]
+    assert after[second["id"]] == before[second["id"]]
+    assert after[third["id"]] < after[first["id"]] < after[second["id"]]
+
+
+def test_rank_move_rebalances_when_neighbor_gap_is_exhausted(client, app):
+    first = create_task(client, "First")
+    second = create_task(client, "Second")
+    third = create_task(client, "Third")
+    with app.app_context():
+        db = get_db()
+        db.execute("UPDATE tasks SET rank_key = NULL")
+        db.executemany(
+            "UPDATE tasks SET rank_key = ? WHERE id = ?",
+            [(1, first["id"]), (2, second["id"]), (3, third["id"])],
+        )
+        db.commit()
+
+    response = client.patch(
+        f"/api/tasks/{third['id']}/rank",
+        json={"after_task_id": first["id"], "before_task_id": second["id"]},
+    )
+
+    assert response.status_code == 200
+    result = response.get_json()
+    assert result["rebalanced"] is True
+    assert [rank["id"] for rank in result["ranks"]] == [
+        first["id"],
+        third["id"],
+        second["id"],
+    ]
+    assert [int(rank["rank_key"]) for rank in result["ranks"]] == [
+        RANK_SPACING,
+        RANK_SPACING * 2,
+        RANK_SPACING * 3,
+    ]
+
+
+def test_rank_move_rejects_stale_non_adjacent_neighbors(client, app):
+    first = create_task(client, "First")
+    second = create_task(client, "Second")
+    third = create_task(client, "Third")
+    with app.app_context():
+        original = [
+            row["id"]
+            for row in get_db().execute("SELECT id FROM tasks ORDER BY rank_key")
+        ]
+
+    response = client.patch(
+        f"/api/tasks/{first['id']}/rank",
+        json={"after_task_id": third["id"], "before_task_id": None},
+    )
+
+    assert response.status_code == 400
+    assert "order changed" in response.get_json()["error"].lower()
+    with app.app_context():
+        current = [
+            row["id"]
+            for row in get_db().execute("SELECT id FROM tasks ORDER BY rank_key")
+        ]
+    assert current == original
 
 
 def test_create_task_rejects_legacy_parent_relationship(client, app):
@@ -289,11 +444,28 @@ def test_index_renders_compact_task_ui(client):
     assert b"task-list" in response.data
     assert b'new-task-dialog' in response.data
     assert b'task-composer' in response.data
+    assert b'id="sort-control"' in response.data
+    assert b'class="rank-handle"' in response.data
+    assert b'data-rank-key=' in response.data
     assert b">Suno...</button>" in response.data
     assert b">Save task</button>" in response.data
     assert b'Counts as progress' in response.data
     assert b'record-progress' not in response.data
     assert b'+ Progress' not in response.data
+
+
+def test_index_count_excludes_done_tasks(client):
+    create_task(client, "Still active")
+    completed = create_task(client, "Already complete")
+    response = client.patch(
+        f"/api/tasks/{completed['id']}", json={"status": "done"}
+    )
+    assert response.status_code == 200
+
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert b'id="active-task-count" class="muted">1 task \xc2\xb7 Asia/Kolkata</span>' in response.data
 
 
 def test_index_shows_task_labels_in_collapsed_view_and_filter(client):
@@ -306,10 +478,53 @@ def test_index_shows_task_labels_in_collapsed_view_and_filter(client):
 
     assert response.status_code == 200
     assert b'id="label-filter"' in response.data
-    assert b'<option value="1">launch</option>' in response.data
+    assert b'value="1" data-filter-value checked' in response.data
+    assert b'<span>launch</span>' in response.data
     assert b'class="task-label-list"' in response.data
     assert b'class="label-chip task-label-filter manual"' in response.data
     assert b'data-label-ids="1"' in response.data
+
+
+def test_status_filter_defaults_to_everything_except_done(client):
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert b'value="todo" data-filter-value checked' in response.data
+    assert b'value="in_progress" data-filter-value checked' in response.data
+    assert b'value="blocked" data-filter-value checked' in response.data
+    assert b'value="done" data-filter-value>' in response.data
+
+
+def test_label_picker_lists_saved_labels_and_checks_task_assignments(client):
+    task = create_task(client, "Plan release")
+    other = create_task(client, "Other work")
+    selected = client.post(
+        f"/api/tasks/{task['id']}/labels", json={"name": "launch"}
+    ).get_json()["task"]["labels"][0]
+    unused = client.post(
+        f"/api/tasks/{other['id']}/labels", json={"name": "someday"}
+    ).get_json()["task"]["labels"][0]
+    assert client.delete(
+        f"/api/tasks/{other['id']}/labels/{unused['id']}"
+    ).status_code == 204
+
+    page = client.get("/").get_data(as_text=True)
+    task_markup = page.split(f'data-task-id="{task["id"]}"', 1)[1].split(
+        "</article>", 1
+    )[0]
+
+    assert 'class="multi-select task-label-picker"' in task_markup
+    assert f'value="{selected["id"]}"' in task_markup
+    assert f'value="{unused["id"]}"' in task_markup
+    selected_option = task_markup.split(f'value="{selected["id"]}"', 1)[1].split(
+        ">", 1
+    )[0]
+    unused_option = task_markup.split(f'value="{unused["id"]}"', 1)[1].split(
+        ">", 1
+    )[0]
+    assert "checked" in selected_option
+    assert "checked" not in unused_option
+    assert "Create or add label…" in task_markup
 
 
 def test_create_task_with_attachment_and_remove_it(client):
