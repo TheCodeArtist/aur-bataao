@@ -36,9 +36,10 @@ The app initializes its schema automatically. Task-list loads reconcile active d
 
 ## One-click launcher (Windows)
 
-Double-click `Start Aur Bataao.cmd` in the project folder. It opens
-<http://127.0.0.1:8080> in the default browser and keeps the local server running
-in a terminal window. Close that terminal window to stop the app.
+Double-click `Start Aur Bataao.cmd` in the project folder. It starts the local
+server, waits until the app is available, then opens <http://127.0.0.1:8080> in
+the default browser. The terminal window stays open while the server is running;
+close it to stop the app.
 
 For desktop access, right-click the launcher, choose **Show more options → Send
 to → Desktop (create shortcut)**, and optionally set the shortcut's **Run**
