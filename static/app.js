@@ -3,7 +3,39 @@ const maxAttachmentBytes = Number(document.body.dataset.maxAttachmentBytes);
 const maxAttachmentsPerTask = Number(document.body.dataset.maxAttachments);
 const maxUploadBytes = Number(document.body.dataset.maxUploadBytes);
 const newlyCreatedTaskStorageKey = "aur-bataao-newly-created-task";
+const themeStorageKey = "aur-bataao-theme";
+const themeToggle = document.querySelector("#theme-toggle");
+const darkModePreference = window.matchMedia("(prefers-color-scheme: dark)");
 let toastTimer;
+
+function savedTheme() {
+  try {
+    const theme = localStorage.getItem(themeStorageKey);
+    return theme === "light" || theme === "dark" ? theme : "";
+  } catch (_) {
+    return "";
+  }
+}
+
+function applyTheme(theme, persist = false) {
+  document.documentElement.dataset.theme = theme;
+  const dark = theme === "dark";
+  const nextTheme = dark ? "light" : "dark";
+  themeToggle.setAttribute("aria-checked", String(dark));
+  themeToggle.setAttribute("aria-label", `Switch to ${nextTheme} mode`);
+  themeToggle.title = `Switch to ${nextTheme} mode`;
+  if (persist) {
+    try { localStorage.setItem(themeStorageKey, theme); } catch (_) { /* storage unavailable */ }
+  }
+}
+
+applyTheme(document.documentElement.dataset.theme || (darkModePreference.matches ? "dark" : "light"));
+themeToggle.addEventListener("click", () => {
+  applyTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark", true);
+});
+darkModePreference.addEventListener("change", (event) => {
+  if (!savedTheme()) applyTheme(event.matches ? "dark" : "light");
+});
 
 function notify(message, error = false) {
   clearTimeout(toastTimer);
@@ -203,16 +235,32 @@ function removeRenderedLabel(row, labelId) {
 }
 
 function applyTask(row, task) {
+  const unresolvedBlockerIds = (task.blocked_by || [])
+    .filter((blocker) => !blocker.resolved)
+    .map((blocker) => String(blocker.id));
+  const hasUnresolvedBlockers = unresolvedBlockerIds.length > 0;
   row.dataset.status = task.status;
   row.dataset.dueDate = task.due_date || "";
   row.dataset.overdue = String(Boolean(task.overdue));
   row.dataset.stalled = String(Boolean(task.stalled));
+  row.dataset.actionable = String(
+    ["todo", "in_progress"].includes(task.status) && !hasUnresolvedBlockers,
+  );
+  row.dataset.blocked = String(task.status === "blocked" || hasUnresolvedBlockers);
+  row.dataset.unresolvedBlockerIds = unresolvedBlockerIds.join(" ");
   row.classList.remove("status-todo", "status-in_progress", "status-blocked", "status-done");
   row.classList.add(`status-${task.status}`);
+  row.querySelector(".focus-status-badge").textContent = {
+    todo: "To do",
+    in_progress: "In progress",
+    blocked: "Blocked",
+    done: "Done",
+  }[task.status];
   if (task.labels) renderLabels(row, task.labels);
   updateActiveTaskCount();
   applyFilters();
   sortTasks();
+  if (document.body.classList.contains("focus-mode")) renderFocusView();
 }
 
 function updateActiveTaskCount() {
@@ -243,9 +291,12 @@ async function patchControl(control) {
     });
     if (field === "title") {
       row.dataset.title = result.task.title.toLowerCase();
+      row.querySelector(".focus-task-title").textContent = result.task.title;
     }
-    control.value = result.task[field] ?? "";
-    control.dataset.previous = control.value;
+    row.querySelectorAll(`[data-field="${field}"]`).forEach((fieldControl) => {
+      fieldControl.value = result.task[field] ?? "";
+      fieldControl.dataset.previous = fieldControl.value;
+    });
     applyTask(row, result.task);
   } catch (error) {
     control.value = previous;
@@ -265,12 +316,21 @@ document.querySelectorAll("[data-field]").forEach((control) => {
 });
 
 document.addEventListener("click", async (event) => {
-  const toggle = event.target.closest(".toggle-details");
+  const toggle = event.target.closest(".toggle-details, .focus-toggle-details");
   if (toggle) {
-    const details = taskRow(toggle).querySelector(".task-details");
+    const row = taskRow(toggle);
+    const details = row.querySelector(".task-details");
     const opening = details.hidden;
     details.hidden = !opening;
-    toggle.setAttribute("aria-expanded", String(opening));
+    row.querySelectorAll(".toggle-details, .focus-toggle-details").forEach((control) => {
+      control.setAttribute("aria-expanded", String(opening));
+    });
+    const focusToggle = row.querySelector(".focus-toggle-details");
+    focusToggle.setAttribute(
+      "aria-label",
+      opening ? "Collapse task details and editing controls" : "Expand task details and editing controls",
+    );
+    focusToggle.title = focusToggle.getAttribute("aria-label");
     return;
   }
 
@@ -401,9 +461,11 @@ function updateNewTaskSubmit() {
   newTaskSubmit.disabled = !newTaskInput.value.trim() || newTaskForm.getAttribute("aria-busy") === "true";
 }
 
-document.querySelector("#open-task-dialog").addEventListener("click", () => {
-  newTaskDialog.showModal();
-  requestAnimationFrame(() => newTaskInput.focus());
+document.querySelectorAll(".open-task-dialog").forEach((button) => {
+  button.addEventListener("click", () => {
+    newTaskDialog.showModal();
+    requestAnimationFrame(() => newTaskInput.focus());
+  });
 });
 newTaskDialog.querySelector(".dialog-close").addEventListener("click", () => newTaskDialog.close());
 newTaskDialog.querySelector(".cancel-new-task").addEventListener("click", () => newTaskDialog.close());
@@ -545,6 +607,8 @@ const statusFilter = document.querySelector("#status-filter");
 const labelFilter = document.querySelector("#label-filter");
 const overdueFilter = document.querySelector("#overdue-filter");
 const stalledFilter = document.querySelector("#stalled-filter");
+const blockedViewIndicator = document.querySelector("#blocked-view-indicator");
+let blockedView = false;
 
 function multiSelectOptions(filter) {
   return [...filter.querySelectorAll("[data-filter-value], [data-task-label-option]")];
@@ -596,6 +660,8 @@ document.querySelectorAll(".filter-multi-select").forEach((filter) => {
         checkbox.checked = event.target.checked;
       });
     }
+    blockedView = false;
+    blockedViewIndicator.hidden = true;
     updateMultiSelect(filter);
     applyFilters();
   });
@@ -653,7 +719,8 @@ function applyFilters() {
       !statuses.has(row.dataset.status) ||
       (labelsAreFiltered && !rowLabels.some((label) => labels.has(label))) ||
       (overdueOnly && row.dataset.overdue !== "true") ||
-      (stalledOnly && row.dataset.stalled !== "true")
+      (stalledOnly && row.dataset.stalled !== "true") ||
+      (blockedView && row.dataset.blocked !== "true")
     );
     if (!row.hidden) visibleTasks += 1;
     row.querySelectorAll(".task-label-filter").forEach((chip) => {
@@ -664,7 +731,13 @@ function applyFilters() {
   if (emptyState) emptyState.hidden = visibleTasks !== 0;
   updateRankPresentation();
 }
-[searchFilter, overdueFilter, stalledFilter].forEach((control) => control.addEventListener("input", applyFilters));
+[searchFilter, overdueFilter, stalledFilter].forEach((control) => {
+  control.addEventListener("input", () => {
+    blockedView = false;
+    blockedViewIndicator.hidden = true;
+    applyFilters();
+  });
+});
 
 const taskList = document.querySelector("#task-list");
 const sortControl = document.querySelector("#sort-control");
@@ -700,6 +773,161 @@ function compareSmart(first, second) {
   if (dueDateDifference) return dueDateDifference;
   return Number(second.dataset.taskId) - Number(first.dataset.taskId);
 }
+
+let focusTaskId = document.querySelector(".task-row.is-focus-task")?.dataset.taskId || "";
+const focusEmptyState = document.querySelector("#focus-empty-state");
+const focusNextAction = document.querySelector("#focus-next-action");
+const aurBataaoButton = document.querySelector("#aur-bataao-button");
+const viewToggle = document.querySelector("#view-toggle");
+
+function actionableTaskRows() {
+  return taskRows()
+    .filter((row) => row.dataset.actionable === "true")
+    .sort(compareSmart);
+}
+
+function renderFocusView(preferredTaskId = focusTaskId) {
+  const candidates = actionableTaskRows();
+  const current = candidates.find((row) => row.dataset.taskId === preferredTaskId) || candidates[0] || null;
+  taskRows().forEach((row) => row.classList.toggle("is-focus-task", row === current));
+  focusTaskId = current?.dataset.taskId || "";
+
+  document.body.classList.toggle("has-actionable", Boolean(current));
+  document.body.classList.toggle("focus-empty", !current);
+  focusEmptyState.hidden = Boolean(current);
+  focusNextAction.hidden = !current;
+  aurBataaoButton.disabled = candidates.length < 2;
+  aurBataaoButton.title = candidates.length < 2 ? "No other actionable task right now" : "Suggest another task";
+}
+
+function showAnotherTask(currentRow) {
+  const candidates = actionableTaskRows();
+  if (candidates.length < 2) return;
+  const currentIndex = candidates.indexOf(currentRow);
+  const next = candidates[(currentIndex + 1) % candidates.length];
+  renderFocusView(next.dataset.taskId);
+}
+
+function showManageView({ blockedOnly = false } = {}) {
+  document.body.classList.remove("focus-mode");
+  document.body.classList.add("manage-mode");
+  viewToggle.textContent = "Aur Bataao";
+  viewToggle.setAttribute("aria-label", "Switch to Aur Bataao view");
+  blockedView = blockedOnly;
+  blockedViewIndicator.hidden = !blockedOnly;
+  applyFilters();
+}
+
+function showFocusView() {
+  document.body.classList.remove("manage-mode");
+  document.body.classList.add("focus-mode");
+  viewToggle.textContent = "View all tasks";
+  viewToggle.setAttribute("aria-label", "Switch to all tasks view");
+  renderFocusView();
+}
+
+viewToggle.setAttribute("aria-label", "Switch to all tasks view");
+viewToggle.addEventListener("click", () => {
+  if (document.body.classList.contains("focus-mode")) {
+    showManageView();
+  } else {
+    showFocusView();
+  }
+});
+document.querySelector("#view-blocked-tasks").addEventListener("click", () => {
+  searchFilter.value = "";
+  overdueFilter.checked = false;
+  stalledFilter.checked = false;
+  statusFilter.querySelectorAll("[data-filter-value]").forEach((checkbox) => {
+    checkbox.checked = checkbox.value !== "done";
+  });
+  labelFilter.querySelectorAll("[data-filter-value]").forEach((checkbox) => {
+    checkbox.checked = true;
+  });
+  updateMultiSelect(statusFilter);
+  updateMultiSelect(labelFilter);
+  showManageView({ blockedOnly: true });
+});
+document.querySelector("#clear-blocked-view").addEventListener("click", () => {
+  blockedView = false;
+  blockedViewIndicator.hidden = true;
+  applyFilters();
+});
+
+aurBataaoButton.addEventListener("click", () => {
+  const currentRow = taskRows().find((row) => row.classList.contains("is-focus-task"));
+  if (currentRow) showAnotherTask(currentRow);
+});
+
+document.querySelectorAll(".complete-focus-task").forEach((button) => {
+  button.addEventListener("click", async () => {
+    const row = taskRow(button);
+    const statusControl = row.querySelector('[data-field="status"]');
+    const previousStatus = row.dataset.status;
+    const previousControlValue = statusControl.value;
+    const candidates = actionableTaskRows();
+    const currentIndex = candidates.indexOf(row);
+    const next = candidates.length > 1
+      ? candidates[(currentIndex + 1) % candidates.length]
+      : null;
+    const dependentSnapshots = taskRows()
+      .filter((candidate) => candidate.dataset.unresolvedBlockerIds.split(" ").includes(row.dataset.taskId))
+      .map((candidate) => ({
+        row: candidate,
+        blockerIds: candidate.dataset.unresolvedBlockerIds,
+        actionable: candidate.dataset.actionable,
+        blocked: candidate.dataset.blocked,
+      }));
+
+    row.dataset.status = "done";
+    row.dataset.actionable = "false";
+    row.dataset.blocked = "false";
+    row.classList.remove(`status-${previousStatus}`);
+    row.classList.add("status-done");
+    statusControl.value = "done";
+    statusControl.dataset.previous = "done";
+    dependentSnapshots.forEach((snapshot) => {
+      const remainingBlockerIds = snapshot.blockerIds
+        .split(" ")
+        .filter((blockerId) => blockerId && blockerId !== row.dataset.taskId);
+      snapshot.row.dataset.unresolvedBlockerIds = remainingBlockerIds.join(" ");
+      snapshot.row.dataset.blocked = String(
+        snapshot.row.dataset.status === "blocked" || remainingBlockerIds.length > 0,
+      );
+      snapshot.row.dataset.actionable = String(
+        ["todo", "in_progress"].includes(snapshot.row.dataset.status)
+        && remainingBlockerIds.length === 0,
+      );
+    });
+    updateActiveTaskCount();
+    applyFilters();
+    renderFocusView(next?.dataset.taskId || "");
+
+    try {
+      const result = await api(`/api/tasks/${row.dataset.taskId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ status: "done" }),
+      });
+      applyTask(row, result.task);
+    } catch (error) {
+      row.dataset.status = previousStatus;
+      row.dataset.actionable = "true";
+      row.classList.remove("status-done");
+      row.classList.add(`status-${previousStatus}`);
+      statusControl.value = previousControlValue;
+      statusControl.dataset.previous = previousControlValue;
+      dependentSnapshots.forEach((snapshot) => {
+        snapshot.row.dataset.unresolvedBlockerIds = snapshot.blockerIds;
+        snapshot.row.dataset.actionable = snapshot.actionable;
+        snapshot.row.dataset.blocked = snapshot.blocked;
+      });
+      updateActiveTaskCount();
+      applyFilters();
+      renderFocusView(row.dataset.taskId);
+      notify(error.message, true);
+    }
+  });
+});
 
 function updateRankPresentation() {
   const rankMode = sortControl.value === "rank";
@@ -910,6 +1138,7 @@ taskList.addEventListener("keydown", async (event) => {
 sortControl.addEventListener("change", () => setSortMode(sortControl.value));
 applyFilters();
 setSortMode(savedSortPreference(), false);
+renderFocusView();
 emphasizeNewlyCreatedTask();
 
 // Reconcile within a minute of midnight in the configured user timezone.

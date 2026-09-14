@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import random
 import sqlite3
 import threading
 import time
@@ -26,6 +27,13 @@ PREVIEWABLE_IMAGE_TYPES = {"image/gif", "image/jpeg", "image/png", "image/webp"}
 RANK_SPACING = 1024
 SQLITE_INTEGER_MIN = -(2**63)
 SQLITE_INTEGER_MAX = 2**63 - 1
+EMPTY_STATE_HEROES = (
+    ("🍻", "Clinking beer mugs"),
+    ("🥂", "Clinking glasses"),
+    ("🍹", "Tropical drink"),
+    ("🍾", "Bottle with popping cork"),
+    ("🧋", "Bubble tea"),
+)
 
 
 def create_app(test_config: dict[str, Any] | None = None) -> Flask:
@@ -567,6 +575,16 @@ def register_routes(app: Flask) -> None:
     def index():
         maybe_reconcile()
         tasks, choices = load_tasks()
+        focus_task = next(
+            (
+                task
+                for task in tasks
+                if task["status"] in {"todo", "in_progress"}
+                and not any(not blocker["resolved"] for blocker in task["blocked_by"])
+            ),
+            None,
+        )
+        empty_state_emoji, empty_state_emoji_label = random.choice(EMPTY_STATE_HEROES)
         label_choices = sorted(
             {
                 label["id"]: label
@@ -585,6 +603,9 @@ def register_routes(app: Flask) -> None:
         return render_template(
             "index.html",
             tasks=tasks,
+            focus_task_id=focus_task["id"] if focus_task else None,
+            empty_state_emoji=empty_state_emoji,
+            empty_state_emoji_label=empty_state_emoji_label,
             task_choices=choices,
             label_choices=label_choices,
             manual_label_choices=manual_label_choices,
@@ -1026,15 +1047,3 @@ def register_routes(app: Flask) -> None:
         changed = reconcile_active_labels()
         current_app.extensions["last_reconcile_monotonic"] = time.monotonic()
         return jsonify(changes=changed)
-
-
-def main() -> None:
-    from waitress import serve
-
-    host = os.getenv("AUR_BATAAO_HOST", "127.0.0.1")
-    port = int(os.getenv("AUR_BATAAO_PORT", "8080"))
-    serve(create_app(), host=host, port=port, threads=4)
-
-
-if __name__ == "__main__":
-    main()

@@ -1,0 +1,82 @@
+*, *::before, *::after { box-sizing: border-box; }
+
+:where(button, input, select, textarea) {
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  color: inherit;
+  background: var(--panel);
+  font: inherit;
+}
+
+:where(button, input:not([type="checkbox"]):not([type="radio"]):not([type="file"]), select) {
+  min-width: 0;
+  min-height: var(--control-height);
+}
+
+button { padding: 0.38rem 0.65rem; cursor: pointer; }
+button:hover { border-color: var(--line-strong); background: var(--surface-hover); }
+button:disabled { cursor: not-allowed; opacity: 0.55; }
+input, select, textarea { min-width: 0; padding: 0.38rem 0.5rem; }
+textarea { width: 100%; resize: vertical; }
+
+:where(input, select, textarea):focus,
+button:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+
+.muted { color: var(--muted); }
+.primary { border-color: var(--focus-ring); color: var(--accent-text); background: var(--accent); font-weight: 700; }
+.primary:hover { border-color: var(--focus-ring); color: var(--accent-text); background: var(--accent-hover); }
+.primary:disabled:hover { border-color: var(--focus-ring); background: var(--accent); }
+.quiet-button { border-color: transparent; color: var(--muted); background: transparent; }
+.quiet-button:hover { color: var(--text); background: var(--surface-hover); }
+.new-task-button { padding-inline: 0.85rem; }
+
+.theme-toggle {
+  position: relative;
+  width: var(--theme-toggle-width);
+  min-height: var(--theme-toggle-height);
+  height: var(--theme-toggle-height);
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  color: var(--theme-toggle-inactive);
+  background: transparent;
+}
+.theme-toggle::before {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: var(--theme-toggle-thumb-size);
+  height: var(--theme-toggle-thumb-size);
+  border: 0;
+  border-radius: 50%;
+  background: var(--theme-toggle-thumb);
+  content: "";
+  transition: transform 160ms ease;
+}
+.theme-toggle:hover { background: transparent; }
+.theme-toggle:hover::before { background: var(--surface-hover); }
+.theme-toggle[aria-checked="true"]::before { transform: translateX(var(--theme-toggle-travel)); }
+.theme-icon {
+  position: absolute;
+  top: 50%;
+  z-index: 1;
+  width: 14px;
+  height: 14px;
+  transform: translateY(-50%);
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.9;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.theme-icon-sun { left: 7px; color: var(--theme-toggle-active); }
+.theme-icon-moon { right: 7px; }
+.theme-toggle[aria-checked="true"] .theme-icon-sun { color: var(--theme-toggle-inactive); }
+.theme-toggle[aria-checked="true"] .theme-icon-moon { color: var(--theme-toggle-active); }
+
+@media (prefers-reduced-motion: reduce) {
+  .theme-toggle::before { transition: none; }
+}

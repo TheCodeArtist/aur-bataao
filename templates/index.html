@@ -4,10 +4,23 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Aur Bataao</title>
+  <script>
+    (() => {
+      const key = "aur-bataao-theme";
+      let theme;
+      try { theme = localStorage.getItem(key); } catch (_) { /* storage unavailable */ }
+      if (theme !== "light" && theme !== "dark") {
+        theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+      }
+      document.documentElement.dataset.theme = theme;
+    })();
+  </script>
+  <link rel="stylesheet" href="{{ url_for('static', filename='theme.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='controls.css') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
   <script type="module" src="{{ url_for('static', filename='app.js') }}"></script>
 </head>
-<body
+<body class="focus-mode{% if focus_task_id %} has-actionable{% else %} focus-empty{% endif %}"
   data-timezone="{{ timezone_name }}"
   data-today="{{ today }}"
   data-max-attachment-bytes="{{ max_attachment_bytes }}"
@@ -23,10 +36,22 @@
         {% set active_task_count = tasks|rejectattr('status', 'equalto', 'done')|list|length %}
         <span id="active-task-count" class="muted">{{ active_task_count }} task{% if active_task_count != 1 %}s{% endif %} · {{ timezone_name }}</span>
       </div>
-      <button id="open-task-dialog" type="button" class="primary new-task-button">Suno...</button>
+      <div class="header-actions">
+        <button id="theme-toggle" class="theme-toggle" type="button" role="switch" aria-checked="false" aria-label="Switch to dark mode" title="Switch to dark mode">
+          <svg class="theme-icon theme-icon-sun" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <circle cx="12" cy="12" r="3.5"></circle>
+            <path d="M12 2v2M12 20v2M4.93 4.93l1.42 1.42M17.65 17.65l1.42 1.42M2 12h2M20 12h2M4.93 19.07l1.42-1.42M17.65 6.35l1.42-1.42"></path>
+          </svg>
+          <svg class="theme-icon theme-icon-moon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path d="M20 15.2A8.5 8.5 0 0 1 8.8 4a8.5 8.5 0 1 0 11.2 11.2Z"></path>
+          </svg>
+        </button>
+        <button id="view-toggle" type="button" class="quiet-button">View all tasks</button>
+        <button id="open-task-dialog" type="button" class="primary new-task-button open-task-dialog">Add a Task...</button>
+      </div>
     </header>
 
-    <section class="toolbar" aria-label="Task filters">
+    <section class="toolbar manage-only" aria-label="Task filters">
       <input id="search-filter" type="search" placeholder="Filter tasks…" aria-label="Filter tasks">
       <details
         id="status-filter"
@@ -79,10 +104,17 @@
       </select>
     </section>
 
+    <div id="blocked-view-indicator" class="blocked-view-indicator manage-only" hidden>
+      <span>Showing tasks that are blocked</span>
+      <button id="clear-blocked-view" type="button" class="link-button">Show all active tasks</button>
+    </div>
+
     <section id="task-list" class="task-list" data-sort="smart" aria-live="polite">
       {% for task in tasks %}
+      {% set unresolved = task.blocked_by|rejectattr('resolved')|list %}
+      {% set actionable = task.status in ['todo', 'in_progress'] and not unresolved %}
       <article
-        class="task-row status-{{ task.status }}"
+        class="task-card task-row status-{{ task.status }}{% if task.id == focus_task_id %} is-focus-task{% endif %}"
         data-task-id="{{ task.id }}"
         data-rank-key="{{ task.rank_key }}"
         data-status="{{ task.status }}"
@@ -91,20 +123,26 @@
         data-label-ids="{{ task.labels|map(attribute='id')|join(' ') }}"
         data-overdue="{{ 'true' if task.overdue else 'false' }}"
         data-stalled="{{ 'true' if task.stalled else 'false' }}"
+        data-actionable="{{ 'true' if actionable else 'false' }}"
+        data-blocked="{{ 'true' if task.status == 'blocked' or unresolved else 'false' }}"
+        data-unresolved-blocker-ids="{{ unresolved|map(attribute='id')|join(' ') }}"
       >
-        <div class="task-main">
-          <button
-            class="rank-handle"
-            type="button"
-            draggable="false"
-            disabled
-            aria-label="Move {{ task.title }} by rank"
-            title="Drag to change rank; use arrow keys for keyboard control"
-          >⠿</button>
-          <span class="badge rank-badge" aria-hidden="true" hidden></span>
-          <button class="icon toggle-details" type="button" aria-expanded="false" aria-label="Show task details">›</button>
+        <header class="task-main">
+          <div class="task-leading">
+            <button
+              class="rank-handle"
+              type="button"
+              draggable="false"
+              disabled
+              aria-label="Move {{ task.title }} by rank"
+              title="Drag to change rank; use arrow keys for keyboard control"
+            >⠿</button>
+            <span class="badge rank-badge" aria-hidden="true" hidden></span>
+            <button class="icon toggle-details" type="button" aria-expanded="false" aria-controls="task-details-{{ task.id }}" aria-label="Show task details"><span class="toggle-chevron" aria-hidden="true">›</span></button>
+          </div>
           <div class="task-summary">
-            <input class="task-title" data-field="title" value="{{ task.title }}" maxlength="200" aria-label="Task title">
+            <input class="task-title manage-task-title" data-field="title" value="{{ task.title }}" maxlength="200" aria-label="Task title">
+            <div class="focus-task-title focus-only">{{ task.title }}</div>
             <div class="task-label-list" aria-label="Labels for {{ task.title }}">
               {% for label in task.labels %}
               <button
@@ -119,53 +157,46 @@
             </div>
           </div>
           <div class="badges">
+            <span class="badge focus-status-badge focus-only">{{ status_labels[task.status] }}</span>
             {% if task.overdue %}<span class="badge danger derived-badge overdue-badge">overdue</span>{% endif %}
             {% if task.stalled %}<span class="badge warning derived-badge stalled-badge">stalled</span>{% endif %}
-            {% set unresolved = task.blocked_by|rejectattr('resolved')|list %}
             {% if unresolved %}<span class="badge danger dependency-badge">blocked ×{{ unresolved|length }}</span>{% endif %}
             {% if task.attachments %}<span class="badge attachment-badge">📎 {{ task.attachments|length }}</span>{% endif %}
           </div>
-          <select class="status-select" data-field="status" aria-label="Status for {{ task.title }}">
-            <option value="todo" {% if task.status == 'todo' %}selected{% endif %}>To do</option>
-            <option value="in_progress" {% if task.status == 'in_progress' %}selected{% endif %}>In progress</option>
-            <option value="blocked" {% if task.status == 'blocked' %}selected{% endif %}>Blocked</option>
-            <option value="done" {% if task.status == 'done' %}selected{% endif %}>Done</option>
-          </select>
-          <input class="due-date" data-field="due_date" type="date" value="{{ task.due_date or '' }}" aria-label="Due date for {{ task.title }}">
-        </div>
+          <div class="task-controls">
+            <select class="status-select" data-field="status" aria-label="Status for {{ task.title }}">
+              <option value="todo" {% if task.status == 'todo' %}selected{% endif %}>To do</option>
+              <option value="in_progress" {% if task.status == 'in_progress' %}selected{% endif %}>In progress</option>
+              <option value="blocked" {% if task.status == 'blocked' %}selected{% endif %}>Blocked</option>
+              <option value="done" {% if task.status == 'done' %}selected{% endif %}>Done</option>
+            </select>
+            <input class="due-date" data-field="due_date" type="date" value="{{ task.due_date or '' }}" aria-label="Due date for {{ task.title }}">
+          </div>
+        </header>
 
-        <div class="task-details" hidden>
+        <footer class="focus-task-actions focus-only">
+          <button
+            type="button"
+            class="focus-toggle-details"
+            aria-expanded="false"
+            aria-controls="task-details-{{ task.id }}"
+            aria-label="Expand task details and editing controls"
+            title="Expand task details and editing controls"
+          >
+            <svg class="disclosure-chevron" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+              <path d="m5 7.5 5 5 5-5"></path>
+            </svg>
+          </button>
+          <button type="button" class="primary complete-focus-task">Done</button>
+        </footer>
+
+        <div id="task-details-{{ task.id }}" class="task-details" hidden>
           <div class="detail-grid">
-            <section>
+            <div class="task-detail-column">
+              <label class="field-label first focus-only" for="focus-title-{{ task.id }}">Title</label>
+              <input id="focus-title-{{ task.id }}" class="focus-title-editor focus-only" data-field="title" value="{{ task.title }}" maxlength="200">
               <label class="field-label" for="description-{{ task.id }}">Description</label>
               <textarea id="description-{{ task.id }}" data-field="description" rows="3" maxlength="5000" placeholder="Optional details">{{ task.description }}</textarea>
-
-              <div class="section-label">Attachments</div>
-              <ul class="attachment-list">
-                {% for attachment in task.attachments %}
-                <li class="attachment-item" data-attachment-id="{{ attachment.id }}">
-                  {% if attachment.previewable %}
-                  <a class="attachment-preview" href="{{ url_for('get_attachment', attachment_id=attachment.id, download=1) }}" title="Download {{ attachment.original_name }}">
-                    <img src="{{ url_for('get_attachment', attachment_id=attachment.id) }}" alt="">
-                  </a>
-                  {% else %}
-                  <span class="attachment-file-icon" aria-hidden="true">📎</span>
-                  {% endif %}
-                  <span class="attachment-meta">
-                    <a href="{{ url_for('get_attachment', attachment_id=attachment.id, download=1) }}">{{ attachment.original_name }}</a>
-                    <small>{{ attachment.size_label }}</small>
-                  </span>
-                  <button type="button" class="link-button remove-attachment" aria-label="Remove {{ attachment.original_name }}">Remove</button>
-                </li>
-                {% else %}
-                <li class="muted empty-attachments">No attachments yet</li>
-                {% endfor %}
-              </ul>
-              <div class="attachment-dropzone task-attachment-dropzone" data-attachment-count="{{ task.attachments|length }}" tabindex="0" role="group" aria-label="Attach files to {{ task.title }} by choosing, dropping, or pasting">
-                <input class="attachment-input" type="file" multiple hidden>
-                <span><strong>Drop files</strong> or paste a screenshot</span>
-                <button type="button" class="choose-attachments">Choose files</button>
-              </div>
 
               <div class="section-label">Labels</div>
               <div class="label-list">
@@ -271,10 +302,38 @@
                   <button type="submit">Add</button>
                 </form>
               </div>
-            </section>
 
-            <section>
-              <div class="section-label first">Comments</div>
+            </div>
+
+            <div class="task-detail-column">
+              <div class="section-label first">Attachments</div>
+              <ul class="attachment-list">
+                {% for attachment in task.attachments %}
+                <li class="attachment-item" data-attachment-id="{{ attachment.id }}">
+                  {% if attachment.previewable %}
+                  <a class="attachment-preview" href="{{ url_for('get_attachment', attachment_id=attachment.id, download=1) }}" title="Download {{ attachment.original_name }}">
+                    <img src="{{ url_for('get_attachment', attachment_id=attachment.id) }}" alt="">
+                  </a>
+                  {% else %}
+                  <span class="attachment-file-icon" aria-hidden="true">📎</span>
+                  {% endif %}
+                  <span class="attachment-meta">
+                    <a href="{{ url_for('get_attachment', attachment_id=attachment.id, download=1) }}">{{ attachment.original_name }}</a>
+                    <small>{{ attachment.size_label }}</small>
+                  </span>
+                  <button type="button" class="link-button remove-attachment" aria-label="Remove {{ attachment.original_name }}">Remove</button>
+                </li>
+                {% else %}
+                <li class="muted empty-attachments">No attachments yet</li>
+                {% endfor %}
+              </ul>
+              <div class="attachment-dropzone task-attachment-dropzone" data-attachment-count="{{ task.attachments|length }}" tabindex="0" role="group" aria-label="Attach files to {{ task.title }} by choosing, dropping, or pasting">
+                <input class="attachment-input" type="file" multiple hidden>
+                <span><strong>Drop files</strong> or paste a screenshot</span>
+                <button type="button" class="choose-attachments">Choose files</button>
+              </div>
+
+              <div class="section-label">Comments</div>
               <form class="comment-form">
                 <textarea name="body" rows="2" maxlength="2000" placeholder="Add a comment…" required></textarea>
                 <div class="comment-actions">
@@ -288,14 +347,27 @@
                 {% else %}<li class="muted empty-note">No comments</li>{% endfor %}
               </ul>
 
-            </section>
+            </div>
           </div>
         </div>
       </article>
-      {% else %}
-      <div class="empty-state">No tasks yet. Create one with <strong>New task</strong>.</div>
       {% endfor %}
-      {% if tasks %}<div id="filter-empty-state" class="empty-state" hidden>No tasks match these filters.</div>{% endif %}
+      {% if not tasks %}<div class="empty-state manage-only">No tasks yet. Add one with <strong>Add a Task...</strong>.</div>{% endif %}
+      {% if tasks %}<div id="filter-empty-state" class="empty-state manage-only" hidden>No tasks match these filters.</div>{% endif %}
+    </section>
+
+    <div id="focus-next-action" class="focus-next-action focus-only"{% if not focus_task_id %} hidden{% endif %}>
+      <button id="aur-bataao-button" type="button">Aur Bataao...</button>
+    </div>
+
+    <section id="focus-empty-state" class="focus-empty-state focus-only"{% if focus_task_id %} hidden{% endif %}>
+      <div class="focus-empty-hero" role="img" aria-label="{{ empty_state_emoji_label }}">{{ empty_state_emoji }}</div>
+      <h2>No actionable tasks</h2>
+      <p>There is nothing ready to work on right now.</p>
+      <div class="focus-empty-actions">
+        <button id="view-blocked-tasks" type="button">View blocked tasks</button>
+        <button type="button" class="primary open-task-dialog">Add a Task...</button>
+      </div>
     </section>
   </main>
 
