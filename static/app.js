@@ -3,6 +3,7 @@ const maxAttachmentBytes = Number(document.body.dataset.maxAttachmentBytes);
 const maxAttachmentsPerTask = Number(document.body.dataset.maxAttachments);
 const maxUploadBytes = Number(document.body.dataset.maxUploadBytes);
 const newlyCreatedTaskStorageKey = "aur-bataao-newly-created-task";
+const newTaskReturnViewStorageKey = "aur-bataao-new-task-return-view";
 const themeStorageKey = "aur-bataao-theme";
 const themeToggle = document.querySelector("#theme-toggle");
 const darkModePreference = window.matchMedia("(prefers-color-scheme: dark)");
@@ -439,6 +440,20 @@ const newTaskInput = document.querySelector("#new-task-input");
 const newTaskSubmit = newTaskForm.querySelector("button[type='submit']");
 const pendingAttachmentList = document.querySelector("#pending-attachments");
 let pendingAttachments = [];
+let newTaskReturnView = "focus";
+
+function currentTaskView() {
+  if (!document.body.classList.contains("manage-mode")) return "focus";
+  return blockedView ? "blocked" : "manage";
+}
+
+function showTaskView(view) {
+  if (view === "manage" || view === "blocked") {
+    showManageView({ blockedOnly: view === "blocked" });
+  } else {
+    showFocusView();
+  }
+}
 
 function renderPendingAttachments() {
   pendingAttachmentList.replaceChildren(...pendingAttachments.map((file, index) => {
@@ -491,6 +506,7 @@ function updateNewTaskSubmit() {
 
 document.querySelectorAll(".open-task-dialog").forEach((button) => {
   button.addEventListener("click", () => {
+    newTaskReturnView = currentTaskView();
     newTaskDialog.showModal();
     requestAnimationFrame(() => newTaskInput.focus());
   });
@@ -501,6 +517,7 @@ newTaskDialog.addEventListener("click", (event) => {
   if (event.target === newTaskDialog) newTaskDialog.close();
 });
 newTaskDialog.addEventListener("close", () => {
+  showTaskView(newTaskReturnView);
   newTaskForm.reset();
   newTaskForm.removeAttribute("aria-busy");
   pendingAttachments = [];
@@ -534,6 +551,7 @@ newTaskForm.addEventListener("submit", async (event) => {
     const result = await api("/api/tasks", { method: "POST", body: formData });
     try {
       sessionStorage.setItem(newlyCreatedTaskStorageKey, String(result.task.id));
+      sessionStorage.setItem(newTaskReturnViewStorageKey, newTaskReturnView);
     } catch (_) { /* Storage can be unavailable in privacy modes. */ }
     location.reload();
   } catch (error) {
@@ -1164,6 +1182,15 @@ function emphasizeNewlyCreatedTask() {
   notify("Task added");
 }
 
+function restoreViewAfterTaskCreation() {
+  let view = "";
+  try {
+    view = sessionStorage.getItem(newTaskReturnViewStorageKey) || "";
+    sessionStorage.removeItem(newTaskReturnViewStorageKey);
+  } catch (_) { /* Storage can be unavailable in privacy modes. */ }
+  if (view) showTaskView(view);
+}
+
 function setReorderInFlight(value) {
   reorderInFlight = value;
   updateRankPresentation();
@@ -1294,6 +1321,7 @@ sortControl.addEventListener("change", () => setSortMode(sortControl.value));
 applyFilters();
 setSortMode(savedSortPreference(), false);
 renderFocusView();
+restoreViewAfterTaskCreation();
 emphasizeNewlyCreatedTask();
 
 // Reconcile at midnight and surface timed follow-ups within a minute.
