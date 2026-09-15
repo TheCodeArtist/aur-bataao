@@ -30,10 +30,49 @@ Attachments default to `instance/attachments`. Each file is limited to 10 MB, ea
 
 ```powershell
 .\.venv\Scripts\Activate.ps1
+git config --local core.hooksPath .githooks
 pytest --basetemp=.pytest-tmp
 ```
 
 The app initializes its schema automatically. Task-list loads reconcile active date labels at most once per minute, and an open browser checks for local midnight once per minute.
+
+### Git hooks
+
+Run `git config --local core.hooksPath .githooks` once after cloning the
+repository. Git does not copy local configuration during a clone and does not
+automatically enable repository-provided hooks for security reasons.
+
+The repository uses these hooks:
+
+- `pre-commit` rejects staged whitespace errors, unresolved conflict markers,
+  generated or local files, and files larger than 100 KiB. It also compiles
+  staged Python content to catch syntax errors without writing bytecode.
+- `commit-msg` limits the subject to 50 characters, requires Conventional
+  Commit prefixes such as `feat:`, `fix:`, or `docs:`, and requires a blank line
+  before an optional description. Description lines are limited to 72
+  characters. Git-generated merge and revert subjects, plus `fixup!` and
+  `squash!` subjects, are exempt from the prefix rule.
+- `pre-push` runs the complete test suite with
+  `pytest --basetemp=.pytest-tmp`.
+
+The supported Conventional Commit types are `build`, `chore`, `ci`, `docs`,
+`feat`, `fix`, `perf`, `refactor`, `revert`, `style`, and `test`. An optional
+lowercase scope and breaking-change marker are supported, for example
+`feat(tasks)!: change ranking behavior`.
+
+The hooks use `.venv\Scripts\python.exe` on Windows or `.venv/bin/python` on
+Linux and macOS, falling back to `python3` or `python` from `PATH`. Commits and
+pushes fail with a setup message when Python is unavailable. When adding or
+updating hook entry points on Windows, preserve their executable mode for other
+platforms:
+
+```powershell
+git add --chmod=+x .githooks/pre-commit .githooks/commit-msg .githooks/pre-push
+```
+
+Local hooks provide early feedback but can be bypassed with `--no-verify`.
+Authoritative enforcement requires running the same validation in CI and making
+that check mandatory before merging.
 
 ## Launcher
 

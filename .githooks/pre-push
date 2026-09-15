@@ -1,0 +1,20 @@
+#!/bin/sh
+
+python_command=
+if [ -x .venv/Scripts/python.exe ]; then
+    python_command=.venv/Scripts/python.exe
+elif [ -x .venv/bin/python ]; then
+    python_command=.venv/bin/python
+elif command -v python3 >/dev/null 2>&1; then
+    python_command=python3
+elif command -v python >/dev/null 2>&1; then
+    python_command=python
+else
+    printf '%s\n' \
+        'Python is required to run the test suite before pushing.' \
+        'Create the project virtual environment before pushing.' >&2
+    exit 1
+fi
+
+printf '%s\n' 'Running test suite before push...'
+exec "$python_command" -m pytest --basetemp=.pytest-tmp

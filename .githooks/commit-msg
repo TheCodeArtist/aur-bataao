@@ -1,0 +1,57 @@
+#!/bin/sh
+
+subject=$(awk 'NR == 1 { sub(/\r$/, ""); print; exit }' "$1")
+subject_length=$(printf '%s\n' "$subject" | awk 'NR == 1 { print length; exit }')
+failed=0
+
+if [ "$subject_length" -gt 50 ]; then
+    printf 'Commit subject must not exceed 50 characters (found %s).\n' \
+        "$subject_length" >&2
+    failed=1
+fi
+
+# Git-generated subjects and autosquash commits do not use Conventional Commit
+# prefixes. All manually authored subjects do.
+case "$subject" in
+    "Merge "*|"Revert \""*|"fixup! "*|"squash! "*) ;;
+    *)
+        if ! printf '%s\n' "$subject" | grep -Eq \
+            '^(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(\([a-z0-9._/-]+\))?!?: .+'; then
+            printf '%s\n' \
+                'Commit subject must use a Conventional Commit prefix.' \
+                'Example: feat: add focused task view' >&2
+            failed=1
+        fi
+        ;;
+esac
+
+# A description must be separated from the subject by an empty line. Comments
+# do not form part of the eventual commit message.
+second_line=$(awk 'NR == 2 { sub(/\r$/, ""); print; exit }' "$1")
+case "$second_line" in
+    ""|"#"*) ;;
+    *)
+        printf '%s\n' \
+            'Commit description must be separated from the subject by a blank line.' >&2
+        failed=1
+        ;;
+esac
+
+# The first line is the subject. Git comment lines are not part of the commit.
+violations=$(awk '
+    {
+        sub(/\r$/, "")
+    }
+    NR > 1 && substr($0, 1, 1) != "#" && length($0) > 72 {
+        printf "  line %d: %d characters\n", NR, length($0)
+    }
+' "$1")
+
+if [ -n "$violations" ]; then
+    printf '%s\n' \
+        'Commit description lines must not exceed 72 characters:' \
+        "$violations" >&2
+    failed=1
+fi
+
+exit "$failed"
