@@ -296,10 +296,13 @@ async function patchControl(control) {
   const previous = control.dataset.previous ?? control.defaultValue;
   const value = control.value;
   if (value === previous) return;
-  if (field === "status" && value === "waiting_person") {
+  if (field === "status" && ["blocked", "waiting_person"].includes(value)) {
     control.value = previous;
     expandTaskDetails(row);
-    row.querySelector('.waiting-form input[name="person_name"]')?.focus();
+    const setupControl = value === "blocked"
+      ? row.querySelector('.add-blocker-form select[name="blocker_task_id"]')
+      : row.querySelector('.waiting-form input[name="person_name"]');
+    setupControl?.focus();
     return;
   }
   control.dataset.previous = value;
