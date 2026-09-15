@@ -1,10 +1,19 @@
 /* Application shell and view composition */
 html { scrollbar-gutter: stable; }
-body { margin: 0; background: var(--bg); color: var(--text); }
-.shell { width: min(1180px, calc(100% - 24px)); margin: 18px auto 36px; }
+body {
+  display: flex;
+  min-height: 100vh;
+  min-height: 100dvh;
+  margin: 0;
+  flex-direction: column;
+  background: var(--bg);
+  color: var(--text);
+}
+.shell { flex: 1 0 auto; width: min(1180px, calc(100% - 24px)); margin: 18px auto; }
 .app-footer {
+  flex: 0 0 auto;
   width: min(1180px, calc(100% - 24px));
-  margin: -18px auto 16px;
+  margin: 0 auto 16px;
   color: var(--muted);
   font-size: 0.72rem;
   text-align: center;
