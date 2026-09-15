@@ -36,11 +36,14 @@ The app initializes its schema automatically. Task-list loads reconcile active d
 ## Launcher
 
 Run `.\.venv\Scripts\python.exe start.py`. The launcher opens the app in the
-default browser and keeps the server in the same process, so Ctrl+C or a normal
-termination signal shuts down the listener and worker threads together. It also
-uses `instance/aur-bataao.pid` as an instance lock to prevent duplicate servers;
-the file is removed on exit. Set `AUR_BATAAO_OPEN_BROWSER=0` to skip opening the
-browser. From another terminal, run `.\.venv\Scripts\python.exe start.py --stop`
-to request a graceful shutdown of a background instance. If `start.py` finds an
-instance already running, it offers to stop that instance gracefully and launch
-a fresh one; declining leaves the existing instance untouched.
+default browser and waits in the foreground while a supervised server worker
+runs, so Ctrl+C or a normal termination signal shuts down the complete process
+tree. It also uses a kernel-backed instance lock to prevent duplicate servers
+and discards stale PID/control files left by a forced termination. On Windows,
+a supervised worker runs inside a kill-on-close Job Object. Native console-close
+and parent-death handling prevent an orphaned listener when the terminal or virtual
+environment launcher is killed. Set `AUR_BATAAO_OPEN_BROWSER=0` to skip opening
+the browser. From another terminal, run
+`.\.venv\Scripts\python.exe start.py --stop` to request a graceful shutdown. If
+`start.py` finds an instance already running, it offers to stop that instance
+gracefully and launch a fresh one; declining leaves it untouched.

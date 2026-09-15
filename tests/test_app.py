@@ -507,6 +507,10 @@ def test_python_launcher_owns_and_cleans_up_server():
     launcher = (Path(__file__).parents[1] / "start.py").read_text(encoding="utf-8")
 
     assert "class InstanceLock" in launcher
+    assert "class ParentWatcher" in launcher
+    assert "class WindowsConsoleCloseHandler" in launcher
+    assert "class WindowsJob" in launcher
+    assert "kill_on_job_close = 0x00002000" in launcher
     assert "signal.SIGINT" in launcher
     assert "signal.SIGTERM" in launcher
     assert 'sys.argv[1:] == ["--stop"]' in launcher
@@ -527,6 +531,39 @@ def test_python_launcher_skips_restart_by_default(monkeypatch, capsys, answer):
 
     assert start.confirm_restart() is False
     assert "existing instance will continue running" in capsys.readouterr().out
+
+
+def test_python_launcher_removes_stale_runtime_files(monkeypatch, tmp_path):
+    lock_path = tmp_path / "aur-bataao.lock"
+    pid_path = tmp_path / "aur-bataao.pid"
+    stop_path = tmp_path / "aur-bataao.stop"
+    ready_path = tmp_path / "aur-bataao-worker-stale.ready"
+    worker_stop_path = tmp_path / "aur-bataao-worker-stale.stop"
+    pid_path.write_text("999999\n", encoding="utf-8")
+    stop_path.write_text("stop\n", encoding="utf-8")
+    ready_path.write_text("stale\n", encoding="utf-8")
+    worker_stop_path.write_text("stop\n", encoding="utf-8")
+    monkeypatch.setattr(start, "RUNTIME_DIR", tmp_path)
+    monkeypatch.setattr(start, "LOCK_FILE", lock_path)
+    monkeypatch.setattr(start, "PID_FILE", pid_path)
+    monkeypatch.setattr(start, "STOP_FILE", stop_path)
+
+    assert start.instance_is_running() is False
+    assert lock_path.exists()
+    assert not pid_path.exists()
+    assert not stop_path.exists()
+    assert not ready_path.exists()
+    assert not worker_stop_path.exists()
+
+
+def test_python_launcher_detects_held_kernel_lock(monkeypatch, tmp_path):
+    lock_path = tmp_path / "aur-bataao.lock"
+    pid_path = tmp_path / "aur-bataao.pid"
+    monkeypatch.setattr(start, "LOCK_FILE", lock_path)
+    monkeypatch.setattr(start, "PID_FILE", pid_path)
+
+    with start.InstanceLock(lock_path, pid_path):
+        assert start.instance_is_running() is True
 
 
 def test_stylesheet_uses_standard_controls_and_responsive_date_width():
