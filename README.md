@@ -13,21 +13,25 @@ vanilla JavaScript, and SQLite.
 - Accepts attachments from the file picker, drag and drop, or clipboard paste.
 - Saves rank changes made by dragging tasks or using the keyboard in the
   backlog view.
-- Tracks tasks that are **Waiting on** another person.
+- Tracks task dependencies and tasks that are **Waiting on** another person as
+  blocking reasons, independently of workflow status.
 
 ### Waiting-on reminders
 
-When a task is blocked by another person, Aur Bataao records the last follow-up
-and the next reminder.
+When a task is waiting on another person, Aur Bataao records the last follow-up
+and the next reminder. The task keeps its **To do** or **In progress** workflow
+status while the active wait makes it unavailable for regular focused work.
 
 - Reminders can include an exact time.
 - Date-only reminders become due at 9:00 AM in the configured user timezone.
 - Due follow-ups appear as actionable cards in the focused view.
 - Completing a follow-up schedules the next reminder.
-- **No longer blocked** returns the underlying task to **To do**.
+- **No longer waiting** removes only the person-based blocking reason and keeps
+  the task's workflow status. Other task dependencies continue to block it.
 
-To configure this state, choose **Waiting on someone…** from a task's status
-menu or use the **Waiting on** section in its expanded details.
+Configure this workflow from the **Waiting on** section in a task's expanded
+details. Workflow status remains limited to **To do**, **In progress**, and
+**Done**.
 
 ## Run locally (Windows PowerShell)
 

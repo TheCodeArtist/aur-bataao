@@ -18,7 +18,6 @@ from flask import Flask, current_app, g, jsonify, render_template, request, send
 STATUS_LABELS = {
     "todo": "To do",
     "in_progress": "In progress",
-    "blocked": "Blocked",
     "done": "Done",
 }
 STATUSES = set(STATUS_LABELS)
@@ -109,7 +108,6 @@ def _smart_ordered_task_ids(db: sqlite3.Connection) -> list[int]:
             SELECT id FROM tasks
             ORDER BY CASE status
                          WHEN 'in_progress' THEN 0
-                         WHEN 'blocked' THEN 1
                          WHEN 'todo' THEN 2
                          ELSE 3
                      END,
@@ -559,6 +557,14 @@ def _serialize_task(db: sqlite3.Connection, row: sqlite3.Row) -> dict[str, Any]:
             )
         item["waiting"] = waiting
 
+    item["blocked"] = bool(
+        row["status"] != "done"
+        and (
+            waiting_row is not None
+            or any(not blocker["resolved"] for blocker in item["blocked_by"])
+        )
+    )
+
     now_local = local_now()
     today = now_local.date()
     next_follow_up_on = waiting_row["next_follow_up_on"] if waiting_row else None
@@ -571,7 +577,7 @@ def _serialize_task(db: sqlite3.Connection, row: sqlite3.Row) -> dict[str, Any]:
             tzinfo=current_app.config["TZINFO"],
         )
     item["follow_up_due"] = bool(
-        row["status"] == "blocked"
+        row["status"] != "done"
         and follow_up_deadline
         and follow_up_deadline <= now_local
     )
@@ -599,16 +605,28 @@ def _serialize_task(db: sqlite3.Connection, row: sqlite3.Row) -> dict[str, Any]:
     return item
 
 
+def _smart_state_order(task: dict[str, Any]) -> int:
+    if task["status"] == "done":
+        return 3
+    if task["blocked"]:
+        return 1
+    return 0 if task["status"] == "in_progress" else 2
+
+
 def load_tasks() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     db = get_db()
-    rows = db.execute(
-        """
-        SELECT * FROM tasks
-        ORDER BY CASE status WHEN 'in_progress' THEN 0 WHEN 'blocked' THEN 1 WHEN 'todo' THEN 2 ELSE 3 END,
-                 COALESCE(due_date, '9999-12-31'), id DESC
-        """
-    ).fetchall()
+    rows = db.execute("SELECT * FROM tasks").fetchall()
     items = [_serialize_task(db, row) for row in rows]
+    items.sort(
+        key=lambda item: (
+            0 if item["follow_up_due"] else 1,
+            item["waiting"]["next_follow_up_on"] if item["follow_up_due"] else "",
+            item["waiting"]["effective_follow_up_time"] if item["follow_up_due"] else "",
+            _smart_state_order(item),
+            item["due_date"] or "9999-12-31",
+            -item["id"],
+        )
+    )
     choices = [
         {"id": item["id"], "title": item["title"], "status": item["status"]}
         for item in items
@@ -811,9 +829,7 @@ def register_routes(app: Flask) -> None:
                 if task["follow_up_due"]
                 or (
                     task["status"] in {"todo", "in_progress"}
-                    and not any(
-                        not blocker["resolved"] for blocker in task["blocked_by"]
-                    )
+                    and not task["blocked"]
                 )
             ),
             None,
@@ -871,7 +887,9 @@ def register_routes(app: Flask) -> None:
                 raise ValueError("Invalid blocked task") from exc
         db = get_db()
         if blocks_task_id is not None:
-            _task_or_404(db, blocks_task_id)
+            blocked_task = _task_or_404(db, blocks_task_id)
+            if blocked_task["status"] == "done":
+                raise ValueError("Reopen the completed task before adding a blocker")
         now = utc_now()
         stored_paths: list[Path] = []
         try:
@@ -1020,9 +1038,9 @@ def register_routes(app: Flask) -> None:
             new_status = changed_fields.pop("status", None)
             if new_status is not None:
                 _change_task_status(db, task, new_status, now)
-                if new_status != "blocked":
+                if new_status == "done":
                     _resolve_active_waiting(
-                        db, task_id, now, reason="status_changed"
+                        db, task_id, now, reason="task_completed"
                     )
             if changed_fields:
                 assignments = ", ".join(f"{key} = ?" for key in changed_fields)
@@ -1176,6 +1194,8 @@ def register_routes(app: Flask) -> None:
         db = get_db()
         task = _task_or_404(db, task_id)
         waiting = _active_waiting(db, task_id)
+        if task["status"] == "done":
+            raise ValueError("Reopen the completed task before waiting on someone")
         if waiting is None and "person_name" not in body:
             raise ValueError("Enter who you are waiting on")
 
@@ -1271,7 +1291,6 @@ def register_routes(app: Flask) -> None:
                         },
                         now=now,
                     )
-            _change_task_status(db, task, "blocked", now)
             db.commit()
         except Exception:
             db.rollback()
@@ -1296,7 +1315,9 @@ def register_routes(app: Flask) -> None:
             )
         )
         db = get_db()
-        _task_or_404(db, task_id)
+        task = _task_or_404(db, task_id)
+        if task["status"] == "done":
+            raise ValueError("A completed task cannot be followed up")
         waiting = _active_waiting(db, task_id)
         if waiting is None:
             raise ValueError("This task is not waiting on anyone")
@@ -1342,19 +1363,15 @@ def register_routes(app: Flask) -> None:
     @app.post("/api/tasks/<int:task_id>/waiting/resolve")
     def resolve_waiting(task_id: int):
         body = _json_body()
-        unknown = set(body) - {"status"}
+        unknown = set(body)
         if unknown:
             raise ValueError(f"Unsupported field: {sorted(unknown)[0]}")
-        status = body.get("status", "todo")
-        if not isinstance(status, str) or status not in {"todo", "in_progress", "done"}:
-            raise ValueError("Resolved waiting status must be To do, In progress, or Done")
 
         db = get_db()
-        task = _task_or_404(db, task_id)
+        _task_or_404(db, task_id)
         now = utc_now()
         if _resolve_active_waiting(db, task_id, now, reason="resolved") is None:
             raise ValueError("This task is not waiting on anyone")
-        _change_task_status(db, task, status, now)
         db.commit()
         return jsonify(task=_serialize_task(db, _task_or_404(db, task_id)))
 
@@ -1412,8 +1429,12 @@ def register_routes(app: Flask) -> None:
         if blocker_id == task_id:
             raise ValueError("A task cannot block itself")
         db = get_db()
-        _task_or_404(db, task_id)
-        _task_or_404(db, blocker_id)
+        blocked_task = _task_or_404(db, task_id)
+        blocker = _task_or_404(db, blocker_id)
+        if blocked_task["status"] == "done":
+            raise ValueError("Reopen the completed task before adding a blocker")
+        if blocker["status"] == "done":
+            raise ValueError("A completed task cannot be an active blocker")
         if _would_create_dependency_cycle(db, task_id, blocker_id):
             raise ValueError("That dependency would create a cycle")
         now = utc_now()

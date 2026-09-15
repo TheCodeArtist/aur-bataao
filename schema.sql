@@ -6,7 +6,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     title TEXT NOT NULL CHECK (length(title) BETWEEN 1 AND 200),
     description TEXT NOT NULL DEFAULT '',
     status TEXT NOT NULL DEFAULT 'todo'
-        CHECK (status IN ('todo', 'in_progress', 'blocked', 'done')),
+        CHECK (status IN ('todo', 'in_progress', 'done')),
     due_date TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,

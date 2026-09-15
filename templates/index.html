@@ -60,16 +60,16 @@
       <details
         id="status-filter"
         class="multi-select filter-multi-select"
-        data-all-label="All statuses"
-        data-empty-label="No statuses"
-        data-singular="status"
-        data-plural="statuses"
+        data-all-label="All states"
+        data-empty-label="No states"
+        data-singular="state"
+        data-plural="states"
       >
-        <summary aria-label="Filter by status"><span class="multi-select-summary">3 statuses</span></summary>
-        <div class="multi-select-menu" role="group" aria-label="Statuses">
+        <summary aria-label="Filter by state"><span class="multi-select-summary">3 states</span></summary>
+        <div class="multi-select-menu" role="group" aria-label="States">
           <label class="multi-select-option multi-select-all">
             <input type="checkbox" data-select-all>
-            <span>All statuses</span>
+            <span>All states</span>
           </label>
           <div class="multi-select-options">
             <label class="multi-select-option"><input type="checkbox" value="todo" data-filter-value checked> <span>To do</span></label>
@@ -117,9 +117,9 @@
     <section id="task-list" class="task-list" data-sort="smart" aria-live="polite">
       {% for task in tasks %}
       {% set unresolved = task.blocked_by|rejectattr('resolved')|list %}
-      {% set actionable = task.follow_up_due or (task.status in ['todo', 'in_progress'] and not unresolved) %}
+      {% set actionable = task.follow_up_due or (task.status in ['todo', 'in_progress'] and not task.blocked) %}
       <article
-        class="task-card task-row status-{{ task.status }}{% if task.id == focus_task_id %} is-focus-task{% endif %}"
+        class="task-card task-row status-{{ task.status }}{% if task.blocked %} is-blocked{% endif %}{% if task.id == focus_task_id %} is-focus-task{% endif %}"
         data-task-id="{{ task.id }}"
         data-rank-key="{{ task.rank_key }}"
         data-status="{{ task.status }}"
@@ -134,7 +134,7 @@
         data-follow-up-exact-time="{{ task.waiting.next_follow_up_time if task.waiting else '' }}"
         data-waiting-on="{{ task.waiting.person_name if task.waiting else '' }}"
         data-actionable="{{ 'true' if actionable else 'false' }}"
-        data-blocked="{{ 'true' if task.status == 'blocked' or unresolved else 'false' }}"
+        data-blocked="{{ 'true' if task.blocked else 'false' }}"
         data-unresolved-blocker-ids="{{ unresolved|map(attribute='id')|join(' ') }}"
       >
         <header class="task-main">
@@ -185,8 +185,6 @@
             <select class="status-select" data-field="status" aria-label="Status for {{ task.title }}">
               <option value="todo" {% if task.status == 'todo' %}selected{% endif %}>To do</option>
               <option value="in_progress" {% if task.status == 'in_progress' %}selected{% endif %}>In progress</option>
-              <option value="blocked" {% if task.status == 'blocked' %}selected{% endif %}>Blocked…</option>
-              <option value="waiting_person">Waiting on someone…</option>
               <option value="done" {% if task.status == 'done' %}selected{% endif %}>Done</option>
             </select>
             <input class="due-date" data-field="due_date" type="date" value="{{ task.due_date or '' }}" aria-label="Due date for {{ task.title }}">
@@ -207,7 +205,7 @@
             </svg>
           </button>
           {% if task.follow_up_due %}
-          <button type="button" class="resolve-waiting">No longer blocked</button>
+          <button type="button" class="resolve-waiting">No longer waiting</button>
           <button type="button" class="primary followed-up" data-person-name="{{ task.waiting.person_name }}">Followed up</button>
           {% else %}
           <button type="button" class="primary complete-focus-task">Done</button>
@@ -303,7 +301,7 @@
                 <div class="waiting-actions">
                   <button type="submit">Save</button>
                   <button type="button" class="followed-up" data-person-name="{{ task.waiting.person_name }}">Followed up</button>
-                  <button type="button" class="link-button resolve-waiting">No longer blocked</button>
+                  <button type="button" class="link-button resolve-waiting">No longer waiting</button>
                 </div>
               </form>
               {% if task.waiting.history %}
@@ -319,6 +317,8 @@
                 </ul>
               </details>
               {% endif %}
+              {% elif task.status == 'done' %}
+              <p class="waiting-hint muted">Reopen this task before waiting on someone.</p>
               {% else %}
               <p class="waiting-hint muted">Track who you’re waiting on and when to follow up.</p>
               <form class="waiting-form">
@@ -367,16 +367,16 @@
                   </li>
                   {% else %}<li class="muted empty-note">No blockers</li>{% endfor %}
                 </ul>
-                <form class="inline-form add-blocker-form">
+                <form class="inline-form add-blocker-form"{% if task.status == 'done' %} hidden{% endif %}>
                   <select name="blocker_task_id" aria-label="Add a task that blocks {{ task.title }}" required>
                     <option value="">Add blocker…</option>
                     {% for choice in task_choices %}
-                      {% if choice.id != task.id and choice.id not in blocker_ids %}<option value="{{ choice.id }}">{{ choice.title }} — {{ status_labels[choice.status] }}</option>{% endif %}
+                      {% if choice.id != task.id and choice.id not in blocker_ids and choice.status != 'done' %}<option value="{{ choice.id }}">{{ choice.title }} — {{ status_labels[choice.status] }}</option>{% endif %}
                     {% endfor %}
                   </select>
                   <button type="submit">Add</button>
                 </form>
-                <form class="inline-form create-blocker-form">
+                <form class="inline-form create-blocker-form"{% if task.status == 'done' %} hidden{% endif %}>
                   <input name="title" maxlength="200" placeholder="Create new blocker…" aria-label="Title for a new task that blocks {{ task.title }}" required>
                   <button type="submit">Create</button>
                 </form>
@@ -398,11 +398,11 @@
                   </li>
                   {% else %}<li class="muted empty-note">Blocks no tasks</li>{% endfor %}
                 </ul>
-                <form class="inline-form add-blocked-task-form">
+                <form class="inline-form add-blocked-task-form"{% if task.status == 'done' %} hidden{% endif %}>
                   <select name="blocked_task_id" aria-label="Add a task blocked by {{ task.title }}" required>
                     <option value="">Add blocked task…</option>
                     {% for choice in task_choices %}
-                      {% if choice.id != task.id and choice.id not in blocked_ids %}<option value="{{ choice.id }}">{{ choice.title }} — {{ status_labels[choice.status] }}</option>{% endif %}
+                      {% if choice.id != task.id and choice.id not in blocked_ids and choice.status != 'done' %}<option value="{{ choice.id }}">{{ choice.title }} — {{ status_labels[choice.status] }}</option>{% endif %}
                     {% endfor %}
                   </select>
                   <button type="submit">Add</button>

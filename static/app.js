@@ -239,7 +239,6 @@ function applyTask(row, task) {
   const unresolvedBlockerIds = (task.blocked_by || [])
     .filter((blocker) => !blocker.resolved)
     .map((blocker) => String(blocker.id));
-  const hasUnresolvedBlockers = unresolvedBlockerIds.length > 0;
   row.dataset.status = task.status;
   row.dataset.dueDate = task.due_date || "";
   row.dataset.overdue = String(Boolean(task.overdue));
@@ -251,16 +250,16 @@ function applyTask(row, task) {
   row.dataset.waitingOn = task.waiting?.person_name || "";
   row.dataset.actionable = String(
     task.follow_up_due
-    || (["todo", "in_progress"].includes(task.status) && !hasUnresolvedBlockers),
+    || (["todo", "in_progress"].includes(task.status) && !task.blocked),
   );
-  row.dataset.blocked = String(task.status === "blocked" || hasUnresolvedBlockers);
+  row.dataset.blocked = String(Boolean(task.blocked));
   row.dataset.unresolvedBlockerIds = unresolvedBlockerIds.join(" ");
-  row.classList.remove("status-todo", "status-in_progress", "status-blocked", "status-done");
+  row.classList.remove("status-todo", "status-in_progress", "status-done");
   row.classList.add(`status-${task.status}`);
+  row.classList.toggle("is-blocked", Boolean(task.blocked));
   row.querySelector(".focus-status-badge").textContent = {
     todo: "To do",
     in_progress: "In progress",
-    blocked: "Blocked",
     done: "Done",
   }[task.status];
   if (task.labels) renderLabels(row, task.labels);
@@ -302,19 +301,10 @@ async function patchControl(control) {
   const previous = control.dataset.previous ?? control.defaultValue;
   const value = control.value;
   if (value === previous) return;
-  if (field === "status" && ["blocked", "waiting_person"].includes(value)) {
-    control.value = previous;
-    expandTaskDetails(row);
-    const setupControl = value === "blocked"
-      ? row.querySelector('.add-blocker-form select[name="blocker_task_id"]')
-      : row.querySelector('.waiting-form input[name="person_name"]');
-    setupControl?.focus();
-    return;
-  }
   control.dataset.previous = value;
   if (field === "status") {
     row.dataset.status = value;
-    row.classList.remove("status-todo", "status-in_progress", "status-blocked", "status-done");
+    row.classList.remove("status-todo", "status-in_progress", "status-done");
     row.classList.add(`status-${value}`);
   }
   try {
@@ -330,7 +320,7 @@ async function patchControl(control) {
       fieldControl.value = result.task[field] ?? "";
       fieldControl.dataset.previous = fieldControl.value;
     });
-    if (field === "status" && row.dataset.waitingOn && value !== "blocked") {
+    if (field === "status" && row.dataset.waitingOn && value === "done") {
       reloadAndRestoreTaskView();
       return;
     }
@@ -340,7 +330,7 @@ async function patchControl(control) {
     control.dataset.previous = previous;
     if (field === "status") {
       row.dataset.status = previous;
-      row.classList.remove("status-todo", "status-in_progress", "status-blocked", "status-done");
+      row.classList.remove("status-todo", "status-in_progress", "status-done");
       row.classList.add(`status-${previous}`);
     }
     notify(error.message, true);
@@ -896,7 +886,7 @@ function applyFilters() {
     const rowLabels = row.dataset.labelIds.split(" ").filter(Boolean);
     row.hidden = Boolean(
       (query && !row.dataset.title.includes(query)) ||
-      !statuses.has(row.dataset.status) ||
+      !(statuses.has(row.dataset.status) || (statuses.has("blocked") && row.dataset.blocked === "true")) ||
       (labelsAreFiltered && !rowLabels.some((label) => labels.has(label))) ||
       (overdueOnly && row.dataset.overdue !== "true") ||
       (stalledOnly && row.dataset.stalled !== "true") ||
@@ -923,7 +913,11 @@ function applyFilters() {
 const taskList = document.querySelector("#task-list");
 const sortControl = document.querySelector("#sort-control");
 const taskSortStorageKey = "aur-bataao-task-sort";
-const smartStatusOrder = { in_progress: 0, blocked: 1, todo: 2, done: 3 };
+function smartStateOrder(row) {
+  if (row.dataset.status === "done") return 3;
+  if (row.dataset.blocked === "true") return 1;
+  return row.dataset.status === "in_progress" ? 0 : 2;
+}
 let reorderInFlight = false;
 let dragState = null;
 
@@ -955,7 +949,7 @@ function compareSmart(first, second) {
     const followUpTimeDifference = first.dataset.followUpTime.localeCompare(second.dataset.followUpTime);
     if (followUpTimeDifference) return followUpTimeDifference;
   }
-  const statusDifference = smartStatusOrder[first.dataset.status] - smartStatusOrder[second.dataset.status];
+  const statusDifference = smartStateOrder(first) - smartStateOrder(second);
   if (statusDifference) return statusDifference;
   const firstDueDate = first.dataset.dueDate || "9999-12-31";
   const secondDueDate = second.dataset.dueDate || "9999-12-31";
@@ -1075,6 +1069,7 @@ document.querySelectorAll(".complete-focus-task").forEach((button) => {
     row.dataset.actionable = "false";
     row.dataset.blocked = "false";
     row.classList.remove(`status-${previousStatus}`);
+    row.classList.remove("is-blocked");
     row.classList.add("status-done");
     statusControl.value = "done";
     statusControl.dataset.previous = "done";
@@ -1084,12 +1079,17 @@ document.querySelectorAll(".complete-focus-task").forEach((button) => {
         .filter((blockerId) => blockerId && blockerId !== row.dataset.taskId);
       snapshot.row.dataset.unresolvedBlockerIds = remainingBlockerIds.join(" ");
       snapshot.row.dataset.blocked = String(
-        snapshot.row.dataset.status === "blocked" || remainingBlockerIds.length > 0,
+        remainingBlockerIds.length > 0 || Boolean(snapshot.row.dataset.waitingOn),
       );
       snapshot.row.dataset.actionable = String(
-        ["todo", "in_progress"].includes(snapshot.row.dataset.status)
-        && remainingBlockerIds.length === 0,
+        snapshot.row.dataset.followUpDue === "true"
+        || (
+          ["todo", "in_progress"].includes(snapshot.row.dataset.status)
+          && remainingBlockerIds.length === 0
+          && !snapshot.row.dataset.waitingOn
+        ),
       );
+      snapshot.row.classList.toggle("is-blocked", snapshot.row.dataset.blocked === "true");
     });
     updateActiveTaskCount();
     applyFilters();
@@ -1112,6 +1112,7 @@ document.querySelectorAll(".complete-focus-task").forEach((button) => {
         snapshot.row.dataset.unresolvedBlockerIds = snapshot.blockerIds;
         snapshot.row.dataset.actionable = snapshot.actionable;
         snapshot.row.dataset.blocked = snapshot.blocked;
+        snapshot.row.classList.toggle("is-blocked", snapshot.blocked === "true");
       });
       updateActiveTaskCount();
       applyFilters();
@@ -1360,7 +1361,8 @@ function dateTimeInConfiguredTimezone() {
 function pendingFollowUpBecameDue(localDateTime) {
   const currentMinute = `${localDateTime.date}T${localDateTime.minute}`;
   return taskRows().some((row) => (
-    row.dataset.status === "blocked"
+    row.dataset.status !== "done"
+    && Boolean(row.dataset.waitingOn)
     && row.dataset.followUpDue !== "true"
     && row.dataset.followUpDate
     && `${row.dataset.followUpDate}T${row.dataset.followUpTime}` <= currentMinute

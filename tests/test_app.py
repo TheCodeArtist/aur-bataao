@@ -338,6 +338,8 @@ def test_dependency_can_be_added_and_removed_from_either_task_direction(client, 
     )
 
     assert blocked_by_response.status_code == 201
+    assert blocked_by_response.get_json()["task"]["status"] == "todo"
+    assert blocked_by_response.get_json()["task"]["blocked"] is True
     assert [task["id"] for task in blocked_by_response.get_json()["task"]["blocked_by"]] == [blocker["id"]]
     assert blocks_response.status_code == 201
 
@@ -449,7 +451,8 @@ def test_waiting_on_person_blocks_task_and_can_be_edited(client, app):
 
     assert response.status_code == 201
     waiting_task = response.get_json()["task"]
-    assert waiting_task["status"] == "blocked"
+    assert waiting_task["status"] == "todo"
+    assert waiting_task["blocked"] is True
     assert waiting_task["waiting"]["person_name"] == "Ravi Kumar"
     assert waiting_task["waiting"]["note"] == "Needs finance sign-off"
     assert waiting_task["waiting"]["next_follow_up_on"] == "2099-01-10"
@@ -480,7 +483,7 @@ def test_waiting_on_person_blocks_task_and_can_be_edited(client, app):
         ]
         assert "waiting_started" in event_types
         assert "waiting_updated" in event_types
-        assert "status_changed" in event_types
+        assert "status_changed" not in event_types
 
 
 def test_follow_up_records_last_contact_history_and_next_reminder(client, app):
@@ -651,7 +654,7 @@ def test_due_follow_up_is_prioritized_as_the_next_action(client, app):
         "</article>", 1
     )[0]
 
-    assert f'class="task-card task-row status-blocked is-focus-task"\n        data-task-id="{waiting["id"]}"' in page
+    assert f'class="task-card task-row status-todo is-blocked is-focus-task"\n        data-task-id="{waiting["id"]}"' in page
     assert 'data-follow-up-due="true"' in waiting_markup
     assert 'data-actionable="true"' in waiting_markup
     assert 'class="focus-task-title focus-only">Follow up with Ravi</div>' in waiting_markup
@@ -660,8 +663,9 @@ def test_due_follow_up_is_prioritized_as_the_next_action(client, app):
     assert "follow-up overdue" in waiting_markup
 
 
-def test_resolving_wait_returns_task_to_todo_and_preserves_history(client, app):
+def test_resolving_wait_preserves_workflow_status_and_history(client, app):
     task = create_task(client, "Get a decision")
+    client.patch(f"/api/tasks/{task['id']}", json={"status": "in_progress"})
     client.put(
         f"/api/tasks/{task['id']}/waiting",
         json={"person_name": "Sam", "next_follow_up_on": "2099-01-10"},
@@ -671,8 +675,9 @@ def test_resolving_wait_returns_task_to_todo_and_preserves_history(client, app):
 
     assert response.status_code == 200
     resolved = response.get_json()["task"]
-    assert resolved["status"] == "todo"
+    assert resolved["status"] == "in_progress"
     assert resolved["waiting"] is None
+    assert resolved["blocked"] is False
     assert resolved["follow_up_due"] is False
     with app.app_context():
         waiting = get_db().execute(
@@ -681,7 +686,64 @@ def test_resolving_wait_returns_task_to_todo_and_preserves_history(client, app):
         assert waiting["resolved_at"] is not None
 
 
-def test_changing_status_resolves_waiting_and_invalid_reminders_are_atomic(client, app):
+def test_resolving_person_wait_preserves_other_blocking_reasons(client):
+    task = create_task(client, "Ship launch")
+    blocker = create_task(client, "Approve launch")
+    client.patch(f"/api/tasks/{task['id']}", json={"status": "in_progress"})
+    client.post(
+        f"/api/tasks/{task['id']}/dependencies",
+        json={"blocker_task_id": blocker["id"]},
+    )
+    client.put(
+        f"/api/tasks/{task['id']}/waiting",
+        json={"person_name": "Ravi", "next_follow_up_on": None},
+    )
+
+    response = client.post(f"/api/tasks/{task['id']}/waiting/resolve", json={})
+    resolved = response.get_json()["task"]
+
+    assert response.status_code == 200
+    assert resolved["status"] == "in_progress"
+    assert resolved["waiting"] is None
+    assert resolved["blocked"] is True
+    assert [item["id"] for item in resolved["blocked_by"] if not item["resolved"]] == [
+        blocker["id"]
+    ]
+
+
+def test_blocked_is_not_a_valid_workflow_status(client):
+    task = create_task(client, "Use explicit blockers")
+
+    response = client.patch(f"/api/tasks/{task['id']}", json={"status": "blocked"})
+
+    assert response.status_code == 400
+    assert response.get_json()["error"] == "Invalid status"
+
+
+def test_completed_tasks_cannot_gain_new_blocking_reasons(client):
+    completed = create_task(client, "Already complete")
+    active = create_task(client, "Still active")
+    client.patch(f"/api/tasks/{completed['id']}", json={"status": "done"})
+
+    wait_response = client.put(
+        f"/api/tasks/{completed['id']}/waiting",
+        json={"person_name": "Ravi", "next_follow_up_on": None},
+    )
+    blocked_task_response = client.post(
+        f"/api/tasks/{completed['id']}/dependencies",
+        json={"blocker_task_id": active["id"]},
+    )
+    completed_blocker_response = client.post(
+        f"/api/tasks/{active['id']}/dependencies",
+        json={"blocker_task_id": completed["id"]},
+    )
+
+    assert wait_response.status_code == 400
+    assert blocked_task_response.status_code == 400
+    assert completed_blocker_response.status_code == 400
+
+
+def test_workflow_changes_preserve_waiting_until_completion(client, app):
     task = create_task(client, "Get an answer")
     invalid = client.put(
         f"/api/tasks/{task['id']}/waiting",
@@ -704,7 +766,13 @@ def test_changing_status_resolves_waiting_and_invalid_reminders_are_atomic(clien
 
     assert response.status_code == 200
     assert response.get_json()["task"]["status"] == "in_progress"
+    assert response.get_json()["task"]["waiting"] is not None
+    assert response.get_json()["task"]["blocked"] is True
+
+    response = client.patch(f"/api/tasks/{task['id']}", json={"status": "done"})
+    assert response.status_code == 200
     assert response.get_json()["task"]["waiting"] is None
+    assert response.get_json()["task"]["blocked"] is False
     with app.app_context():
         assert get_db().execute(
             "SELECT resolved_at FROM task_waiting WHERE task_id = ?", (task["id"],)
@@ -1059,12 +1127,16 @@ def test_index_renders_native_date_control(client):
 
 def test_index_defaults_to_one_actionable_task(client):
     older_todo = create_task(client, "Older todo")
-    blocked = create_task(client, "Blocked by status")
+    blocked = create_task(client, "Blocked by dependency")
+    blocker = create_task(client, "Dependency")
     in_progress = create_task(client, "Already moving")
     client.patch(
         f"/api/tasks/{in_progress['id']}", json={"status": "in_progress"}
     )
-    client.patch(f"/api/tasks/{blocked['id']}", json={"status": "blocked"})
+    client.post(
+        f"/api/tasks/{blocked['id']}/dependencies",
+        json={"blocker_task_id": blocker["id"]},
+    )
 
     page = client.get("/").get_data(as_text=True)
 
@@ -1117,7 +1189,10 @@ def test_index_excludes_dependency_blocked_task_from_focus(client):
 
 def test_index_shows_english_empty_state_when_nothing_is_actionable(client):
     blocked = create_task(client, "Waiting")
-    client.patch(f"/api/tasks/{blocked['id']}", json={"status": "blocked"})
+    client.put(
+        f"/api/tasks/{blocked['id']}/waiting",
+        json={"person_name": "Ravi", "next_follow_up_on": None},
+    )
 
     page = client.get("/").get_data(as_text=True)
 
@@ -1222,7 +1297,7 @@ def test_index_shows_task_labels_in_collapsed_view_and_filter(client):
     assert b'data-label-ids="1"' in response.data
 
 
-def test_status_filter_defaults_to_everything_except_done(client):
+def test_state_filter_defaults_to_everything_except_done(client):
     response = client.get("/")
 
     assert response.status_code == 200
@@ -1230,6 +1305,7 @@ def test_status_filter_defaults_to_everything_except_done(client):
     assert b'value="in_progress" data-filter-value checked' in response.data
     assert b'value="blocked" data-filter-value checked' in response.data
     assert b'value="done" data-filter-value>' in response.data
+    assert b'data-all-label="All states"' in response.data
 
 
 def test_label_picker_lists_saved_labels_and_checks_task_assignments(client):

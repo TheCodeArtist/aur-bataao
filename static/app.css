@@ -332,7 +332,7 @@ body:has(.new-task-dialog[open]) { overflow: hidden; }
 .task-card.is-newly-created:not(.is-dragging) { animation: newly-created-task 3600ms ease-out; }
 .task-card.is-dragging { opacity: 0.42; box-shadow: 0 5px 16px rgb(var(--shadow-color) / 28%); }
 .task-card.status-in_progress { --task-status-color: var(--accent-ink); }
-.task-card.status-blocked { --task-status-color: var(--blocked-status); }
+.task-card.is-blocked { --task-status-color: var(--blocked-status); }
 .task-card.status-done { --task-status-color: var(--success); opacity: 0.78; }
 .task-card.status-done .task-title { text-decoration: line-through; color: var(--muted); }
 .task-main {
