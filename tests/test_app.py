@@ -806,6 +806,24 @@ def test_stylesheet_supports_nvidia_light_and_dark_themes():
     assert "color: var(--accent-text);" in controls
 
 
+def test_stylesheet_uses_subtle_functional_motifs():
+    theme = (Path(__file__).parents[1] / "static" / "theme.css").read_text(
+        encoding="utf-8"
+    )
+    layout = (Path(__file__).parents[1] / "static" / "app.css").read_text(
+        encoding="utf-8"
+    )
+
+    assert "--motif-line:" in theme
+    assert ".task-card::before" in layout
+    assert "body.focus-mode .task-card.is-focus-task::after" in layout
+    assert ".relationship-list li::before" in layout
+    assert ".comments li" in layout
+    assert "background-image:" in layout.split(".new-task-dialog {", 1)[1].split(
+        "}", 1
+    )[0]
+
+
 def test_python_launcher_owns_and_cleans_up_server():
     launcher = (Path(__file__).parents[1] / "start.py").read_text(encoding="utf-8")
 
@@ -869,7 +887,7 @@ def test_python_launcher_detects_held_kernel_lock(monkeypatch, tmp_path):
         assert start.instance_is_running() is True
 
 
-def test_stylesheet_uses_standard_controls_and_responsive_date_width():
+def test_stylesheet_uses_compact_borderless_task_controls_and_responsive_date_width():
     theme = (Path(__file__).parents[1] / "static" / "theme.css").read_text(
         encoding="utf-8"
     )
@@ -884,7 +902,6 @@ def test_stylesheet_uses_standard_controls_and_responsive_date_width():
     assert "--date-input-width: 150px;" in theme
     assert "min-height: var(--control-height);" in controls
     assert ".status-select, .due-date" in layout
-    assert "height: calc(var(--control-height) + 2px);" in layout
     assert 'grid-template-areas: "leading summary badges controls";' in layout
     assert 'grid-template-columns: 116px var(--date-input-width);' in layout
     assert '"leading summary summary"' in layout
@@ -898,8 +915,23 @@ def test_stylesheet_uses_standard_controls_and_responsive_date_width():
     assert "calendar.svg" not in controls
     row_controls = layout.split(".status-select, .due-date {", 1)[1].split("}", 1)[0]
     assert "width: 100%;" in row_controls
-    assert "height: calc(var(--control-height) + 2px);" in row_controls
+    assert "min-height: 30px;" in row_controls
+    assert "height: 30px;" in row_controls
     assert "padding-block: 0;" in row_controls
+    assert "border-color: transparent;" in row_controls
+    assert "background: transparent;" in row_controls
+    assert ".status-select:is(:hover, :focus), .due-date:is(:hover, :focus)" in layout
+    highlighted_controls = layout.split(
+        ".status-select:is(:hover, :focus), .due-date:is(:hover, :focus) {", 1
+    )[1].split("}", 1)[0]
+    assert "border-color: var(--line);" in highlighted_controls
+    assert "background: var(--panel);" in highlighted_controls
+    task_card_layout = layout.split("/* Task cards */", 1)[1]
+    task_main = task_card_layout.split(".task-main {", 1)[1].split("}", 1)[0]
+    task_title = task_card_layout.split("\n.task-title {", 1)[1].split("}", 1)[0]
+    assert "padding: 2px 8px 2px 4px;" in task_main
+    assert "min-height: 26px;" in task_title
+    assert "height: 26px;" in task_title
     assert "--task-row-padding-block" not in theme
 
 
