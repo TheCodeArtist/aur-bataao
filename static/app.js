@@ -3,7 +3,7 @@ const maxAttachmentBytes = Number(document.body.dataset.maxAttachmentBytes);
 const maxAttachmentsPerTask = Number(document.body.dataset.maxAttachments);
 const maxUploadBytes = Number(document.body.dataset.maxUploadBytes);
 const newlyCreatedTaskStorageKey = "aur-bataao-newly-created-task";
-const newTaskReturnViewStorageKey = "aur-bataao-new-task-return-view";
+const taskReturnViewStorageKey = "aur-bataao-task-return-view";
 const themeStorageKey = "aur-bataao-theme";
 const themeToggle = document.querySelector("#theme-toggle");
 const darkModePreference = window.matchMedia("(prefers-color-scheme: dark)");
@@ -170,7 +170,7 @@ async function uploadTaskAttachments(zone, files) {
       body: formData,
     });
     notify(`${files.length} attachment${files.length === 1 ? "" : "s"} added`);
-    location.reload();
+    reloadAndRestoreTaskView();
   } catch (error) {
     zone.classList.remove("is-uploading");
     zone.querySelectorAll("button, input").forEach((control) => { control.disabled = false; });
@@ -322,7 +322,7 @@ async function patchControl(control) {
       fieldControl.dataset.previous = fieldControl.value;
     });
     if (field === "status" && row.dataset.waitingOn && value !== "blocked") {
-      location.reload();
+      reloadAndRestoreTaskView();
       return;
     }
     applyTask(row, result.task);
@@ -397,7 +397,7 @@ document.addEventListener("click", async (event) => {
         `/api/tasks/${removeRelationship.dataset.blockedTaskId}/dependencies/${removeRelationship.dataset.blockerTaskId}`,
         { method: "DELETE" },
       );
-      location.reload();
+      reloadAndRestoreTaskView();
     } catch (error) {
       removeRelationship.disabled = false;
       notify(error.message, true);
@@ -414,7 +414,7 @@ document.addEventListener("click", async (event) => {
       await api(`/api/tasks/${row.dataset.taskId}/attachments/${item.dataset.attachmentId}`, {
         method: "DELETE",
       });
-      location.reload();
+      reloadAndRestoreTaskView();
     } catch (error) {
       removeAttachment.disabled = false;
       notify(error.message, true);
@@ -427,7 +427,7 @@ async function submitAndReload(form, url, body) {
   button.disabled = true;
   try {
     await api(url, { method: "POST", body: JSON.stringify(body) });
-    location.reload();
+    reloadAndRestoreTaskView();
   } catch (error) {
     button.disabled = false;
     notify(error.message, true);
@@ -453,6 +453,17 @@ function showTaskView(view) {
   } else {
     showFocusView();
   }
+}
+
+function rememberTaskView(view = currentTaskView()) {
+  try {
+    sessionStorage.setItem(taskReturnViewStorageKey, view);
+  } catch (_) { /* Storage can be unavailable in privacy modes. */ }
+}
+
+function reloadAndRestoreTaskView(view = currentTaskView()) {
+  rememberTaskView(view);
+  location.reload();
 }
 
 function renderPendingAttachments() {
@@ -551,9 +562,8 @@ newTaskForm.addEventListener("submit", async (event) => {
     const result = await api("/api/tasks", { method: "POST", body: formData });
     try {
       sessionStorage.setItem(newlyCreatedTaskStorageKey, String(result.task.id));
-      sessionStorage.setItem(newTaskReturnViewStorageKey, newTaskReturnView);
     } catch (_) { /* Storage can be unavailable in privacy modes. */ }
-    location.reload();
+    reloadAndRestoreTaskView(newTaskReturnView);
   } catch (error) {
     newTaskForm.removeAttribute("aria-busy");
     updateNewTaskSubmit();
@@ -664,7 +674,7 @@ document.querySelectorAll(".waiting-form").forEach((form) => {
           next_follow_up_time: form.elements.next_follow_up_time.value || null,
         }),
       });
-      location.reload();
+      reloadAndRestoreTaskView();
     } catch (error) {
       button.disabled = false;
       notify(error.message, true);
@@ -737,7 +747,7 @@ followUpForm.addEventListener("submit", async (event) => {
         next_follow_up_time: followUpForm.elements.next_follow_up_time.value || null,
       }),
     });
-    location.reload();
+    reloadAndRestoreTaskView();
   } catch (error) {
     button.disabled = false;
     notify(error.message, true);
@@ -753,7 +763,7 @@ document.querySelectorAll(".resolve-waiting").forEach((button) => {
         method: "POST",
         body: "{}",
       });
-      location.reload();
+      reloadAndRestoreTaskView();
     } catch (error) {
       button.disabled = false;
       notify(error.message, true);
@@ -1182,11 +1192,11 @@ function emphasizeNewlyCreatedTask() {
   notify("Task added");
 }
 
-function restoreViewAfterTaskCreation() {
+function restoreTaskViewAfterReload() {
   let view = "";
   try {
-    view = sessionStorage.getItem(newTaskReturnViewStorageKey) || "";
-    sessionStorage.removeItem(newTaskReturnViewStorageKey);
+    view = sessionStorage.getItem(taskReturnViewStorageKey) || "";
+    sessionStorage.removeItem(taskReturnViewStorageKey);
   } catch (_) { /* Storage can be unavailable in privacy modes. */ }
   if (view) showTaskView(view);
 }
@@ -1321,7 +1331,7 @@ sortControl.addEventListener("change", () => setSortMode(sortControl.value));
 applyFilters();
 setSortMode(savedSortPreference(), false);
 renderFocusView();
-restoreViewAfterTaskCreation();
+restoreTaskViewAfterReload();
 emphasizeNewlyCreatedTask();
 
 // Reconcile at midnight and surface timed follow-ups within a minute.
@@ -1355,7 +1365,7 @@ setInterval(async () => {
   ) {
     try {
       await api("/api/reconcile", { method: "POST", body: "{}" });
-      location.reload();
+      reloadAndRestoreTaskView();
     } catch (error) {
       notify(error.message, true);
     }
