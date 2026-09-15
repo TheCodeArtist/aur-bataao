@@ -31,7 +31,7 @@
     <header class="app-header">
       <div class="app-identity">
         <h1 class="app-title">
-          <img class="app-icon" src="{{ url_for('static', filename='aur-bataao-icon.jpg') }}" alt="Aur Bataao" width="56" height="56">
+          <img class="app-icon" src="{{ url_for('static', filename='aur-bataao-icon.png') }}" alt="Aur Bataao" width="56" height="56">
         </h1>
         {% set in_progress_count = tasks|selectattr('status', 'equalto', 'in_progress')|list|length %}
         {% set follow_up_count = tasks|selectattr('follow_up_due')|list|length %}
