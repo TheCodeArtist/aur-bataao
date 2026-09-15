@@ -2,6 +2,14 @@
 html { scrollbar-gutter: stable; }
 body { margin: 0; background: var(--bg); color: var(--text); }
 .shell { width: min(1180px, calc(100% - 24px)); margin: 18px auto 36px; }
+.app-footer {
+  width: min(1180px, calc(100% - 24px));
+  margin: -18px auto 16px;
+  color: var(--muted);
+  font-size: 0.72rem;
+  text-align: center;
+  opacity: 0.72;
+}
 .app-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 10px; }
 .app-identity { display: flex; align-items: center; gap: 10px; }
 .app-title { margin: 0; line-height: 0; }
@@ -236,7 +244,7 @@ body:has(.new-task-dialog[open]) { overflow: hidden; }
 .dialog-actions { display: flex; justify-content: flex-end; margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--line-subtle); }
 
 /* Backlog filters */
-.toolbar { display: flex; align-items: center; gap: 7px; padding: 7px; margin-bottom: 8px; background: var(--surface-muted); border-radius: var(--radius); }
+.toolbar { display: flex; align-items: center; gap: 7px; padding: 7px; margin-bottom: 8px; background: transparent; border-radius: var(--radius); }
 .toolbar input[type="search"] { width: 220px; }
 .toolbar .check { margin-left: 4px; }
 .sort-control { min-height: var(--control-height); margin-left: auto; }
@@ -324,6 +332,8 @@ body:has(.new-task-dialog[open]) { overflow: hidden; }
   grid-template-columns: auto minmax(0, 1fr) auto auto;
   align-items: center;
   gap: 8px;
+  box-sizing: border-box;
+  height: 54px;
   min-width: 0;
   padding: 2px 8px 2px 4px;
 }
@@ -344,7 +354,7 @@ body:has(.new-task-dialog[open]) { overflow: hidden; }
 .task-controls { display: grid; grid-area: controls; grid-template-columns: 116px var(--date-input-width); align-items: center; gap: 6px; }
 .status-select, .due-date { width: 100%; min-width: 0; min-height: 30px; height: 30px; padding-block: 0; border-color: transparent; background: transparent; font-size: 0.85rem; line-height: normal; }
 .status-select:is(:hover, :focus), .due-date:is(:hover, :focus) { border-color: var(--line); background: var(--panel); }
-.badges { display: flex; grid-area: badges; flex-wrap: wrap; min-width: 0; gap: 4px; }
+.badges { display: flex; grid-area: badges; flex-wrap: nowrap; min-width: 0; gap: 4px; overflow: hidden; }
 .badges:empty { display: none; }
 .badge { display: inline-flex; align-items: center; min-height: 20px; padding: 1px 6px; border-radius: 999px; font-size: 0.72rem; font-weight: 650; white-space: nowrap; }
 .badge.danger { color: var(--danger); background: var(--danger-soft); }
@@ -368,7 +378,7 @@ body:has(.new-task-dialog[open]) { overflow: hidden; }
 .label-editor .inline-form { margin-top: 0; }
 .task-label-picker { width: 100%; }
 .task-label-picker .multi-select-menu { min-width: max(100%, 220px); }
-.task-label-list { display: flex; flex-wrap: wrap; gap: 3px; min-width: 0; }
+.task-label-list { display: flex; flex-wrap: nowrap; gap: 3px; min-width: 0; overflow: hidden; }
 .task-label-list:empty { display: none; }
 button.task-label-filter:hover { color: var(--accent-ink); background: var(--surface-hover); }
 button.task-label-filter.active_date:hover { background: var(--accent-soft); }
@@ -500,6 +510,7 @@ button.task-label-filter[aria-pressed="true"] { color: var(--accent-text); backg
       ". badges controls";
     grid-template-columns: auto minmax(0, 1fr) auto;
     align-items: start;
+    height: 84px;
   }
   .badges { align-self: center; }
 }
@@ -530,6 +541,7 @@ button.task-label-filter[aria-pressed="true"] { color: var(--accent-text); backg
       ". badges"
       ". controls";
     grid-template-columns: auto minmax(0, 1fr);
+    height: 118px;
   }
   .badges { justify-content: flex-start; }
   .task-controls { grid-template-columns: minmax(104px, 0.8fr) minmax(145px, 1fr); width: 100%; }
@@ -554,6 +566,7 @@ button.task-label-filter[aria-pressed="true"] { color: var(--accent-text); backg
   .toolbar .filter-multi-select summary { width: 100%; }
   .toolbar .sort-control { margin-left: auto; }
   .task-controls { grid-template-columns: 1fr; }
+  .task-main { height: 152px; }
   .dialog-follow-up-schedule { grid-template-columns: 1fr; }
   .dialog-follow-up-schedule label[for="follow-up-time"],
   .dialog-follow-up-schedule #follow-up-time { grid-column: 1; grid-row: auto; }

@@ -947,10 +947,27 @@ def test_stylesheet_uses_compact_borderless_task_controls_and_responsive_date_wi
     task_card_layout = layout.split("/* Task cards */", 1)[1]
     task_main = task_card_layout.split(".task-main {", 1)[1].split("}", 1)[0]
     task_title = task_card_layout.split("\n.task-title {", 1)[1].split("}", 1)[0]
+    badges = task_card_layout.split("\n.badges {", 1)[1].split("}", 1)[0]
+    task_labels = task_card_layout.split("\n.task-label-list {", 1)[1].split("}", 1)[0]
     assert "padding: 2px 8px 2px 4px;" in task_main
+    assert "height: 54px;" in task_main
+    assert "flex-wrap: nowrap;" in badges
+    assert "overflow: hidden;" in badges
+    assert "flex-wrap: nowrap;" in task_labels
+    assert "overflow: hidden;" in task_labels
     assert "min-height: 26px;" in task_title
     assert "height: 26px;" in task_title
     assert "--task-row-padding-block" not in theme
+
+
+def test_toolbar_has_no_panel_background():
+    layout = (Path(__file__).parents[1] / "static" / "app.css").read_text(
+        encoding="utf-8"
+    )
+
+    toolbar = layout.split(".toolbar {", 1)[1].split("}", 1)[0]
+    assert "background: transparent;" in toolbar
+    assert "background: var(--surface-muted);" not in toolbar
 
 
 def test_collapsed_and_expanded_labels_share_compact_height():
