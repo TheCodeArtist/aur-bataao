@@ -31,7 +31,7 @@
     <header class="app-header">
       <div class="app-identity">
         <h1 class="app-title">
-          <img class="app-icon" src="{{ url_for('static', filename='aur-bataao-icon.png') }}" alt="Aur Bataao" width="56" height="56">
+          <img class="app-icon" src="{{ url_for('static', filename='aur-bataao-icon.jpg') }}" alt="Aur Bataao" width="56" height="56">
         </h1>
         {% set active_task_count = tasks|rejectattr('status', 'equalto', 'done')|list|length %}
         <span id="active-task-count" class="muted">{{ active_task_count }} task{% if active_task_count != 1 %}s{% endif %} · {{ timezone_name }}</span>
