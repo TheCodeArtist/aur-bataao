@@ -814,14 +814,32 @@ def test_stylesheet_uses_subtle_functional_motifs():
         encoding="utf-8"
     )
 
-    assert "--motif-line:" in theme
+    wave = (Path(__file__).parents[1] / "static" / "wave-motif.svg").read_text(
+        encoding="utf-8"
+    )
+
+    light_theme = theme.split(':root[data-theme="dark"] {', 1)[0]
+    assert "--motif-opacity: 0.05;" in light_theme
+    dark_theme = theme.split(':root[data-theme="dark"] {', 1)[1]
+    assert "--motif-opacity: 0.14;" in dark_theme
+    assert 'viewBox="0 0 4800 240"' in wave
+    assert wave.count("<path") == 12
+    assert all(f'id="wave-{variant}"' in wave for variant in "abcd")
     assert ".task-card::before" in layout
+    task_motif = layout.split(".task-card::before {", 1)[1].split("}", 1)[0]
+    assert "left: -6%;" in task_motif
+    assert "width: 112%;" in task_motif
+    assert ".task-card:nth-child(4n + 2)::before" in layout
+    assert ".task-card:nth-child(4n + 3)::before" in layout
+    assert ".task-card:nth-child(4n)::before" in layout
     assert "body.focus-mode .task-card.is-focus-task::after" in layout
     assert ".relationship-list li::before" in layout
     assert ".comments li" in layout
-    assert "background-image:" in layout.split(".new-task-dialog {", 1)[1].split(
-        "}", 1
-    )[0]
+    assert layout.count('\n  mask: url("wave-motif.svg")') == 3
+    assert layout.count('\n  -webkit-mask: url("wave-motif.svg")') == 3
+    assert "mask-position: 33.333% center;" in layout
+    assert "mask-position: 66.667% center;" in layout
+    assert "mask-position: right center;" in layout
 
 
 def test_python_launcher_owns_and_cleans_up_server():

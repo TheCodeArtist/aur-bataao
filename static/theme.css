@@ -23,7 +23,7 @@
   --success: #347544;
   --neutral-status: #737373;
   --blocked-status: #a64736;
-  --motif-line: color-mix(in srgb, var(--accent-ink) 11%, transparent);
+  --motif-opacity: 0.05;
   --shadow-color: 30 30 30;
   --backdrop: 15 15 15;
   --toast: #252525;
@@ -66,6 +66,7 @@
   --success: #8bd09b;
   --neutral-status: #a0a0a0;
   --blocked-status: #e58f7e;
+  --motif-opacity: 0.14;
   --shadow-color: 0 0 0;
   --backdrop: 0 0 0;
   --toast: #eeeeee;

@@ -55,23 +55,19 @@ body.focus-mode .task-card.is-focus-task {
 }
 body.focus-mode .task-card.is-focus-task::after {
   position: absolute;
-  top: -116px;
-  right: -56px;
+  top: -30%;
+  left: -6%;
   z-index: 0;
-  width: 300px;
-  height: 260px;
-  border-radius: 50%;
-  background: radial-gradient(
-    circle,
-    transparent 0 72px,
-    color-mix(in srgb, var(--task-status-color) 13%, transparent) 73px 74px,
-    transparent 75px 104px,
-    color-mix(in srgb, var(--task-status-color) 10%, transparent) 105px 106px,
-    transparent 107px
-  );
+  width: 112%;
+  height: 160%;
+  background: var(--task-status-color);
   content: "";
+  opacity: calc(var(--motif-opacity) + 0.01);
   pointer-events: none;
+  -webkit-mask: url("wave-motif.svg") 66.667% center / 400% 100% no-repeat;
+  mask: url("wave-motif.svg") 66.667% center / 400% 100% no-repeat;
 }
+body.focus-mode .task-card.is-focus-task::before { display: none; }
 body.focus-mode .task-main {
   grid-template-areas: "summary badges controls";
   grid-template-columns: minmax(0, 1fr) auto auto;
@@ -197,18 +193,32 @@ body.focus-mode .focus-title-editor { width: 100%; }
 /* Task composer dialog */
 body:has(.new-task-dialog[open]) { overflow: hidden; }
 .new-task-dialog {
+  position: relative;
   width: min(560px, calc(100% - 24px));
   max-height: calc(100vh - 32px);
   padding: 20px;
+  overflow: hidden;
   border: 1px solid var(--line);
   border-radius: 12px;
   color: var(--text);
-  background-color: var(--panel);
-  background-image:
-    radial-gradient(circle at calc(100% + 12px) -12px, transparent 0 60px, var(--motif-line) 61px 62px, transparent 63px),
-    radial-gradient(circle at calc(100% + 12px) -12px, transparent 0 88px, var(--motif-line) 89px 90px, transparent 91px);
+  background: var(--panel);
   box-shadow: 0 20px 60px rgb(var(--shadow-color) / 38%);
 }
+.new-task-dialog::before {
+  position: absolute;
+  top: 0;
+  left: -6%;
+  z-index: 0;
+  width: 112%;
+  height: 100%;
+  background: var(--accent-ink);
+  content: "";
+  opacity: calc(var(--motif-opacity) - 0.02);
+  pointer-events: none;
+  -webkit-mask: url("wave-motif.svg") 33.333% center / 400% 100% no-repeat;
+  mask: url("wave-motif.svg") 33.333% center / 400% 100% no-repeat;
+}
+.new-task-dialog > * { position: relative; z-index: 1; }
 .new-task-dialog::backdrop { background: rgb(var(--backdrop) / 58%); backdrop-filter: blur(2px); }
 .dialog-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 18px; }
 .dialog-heading h2 { margin: 0; font-size: 1.15rem; }
@@ -266,18 +276,41 @@ body:has(.new-task-dialog[open]) { overflow: hidden; }
 }
 .task-card::before {
   position: absolute;
-  top: -62px;
-  left: 8%;
+  top: -25%;
+  left: -6%;
   z-index: 0;
-  width: 220px;
-  height: 74px;
-  border: 1px solid color-mix(in srgb, var(--task-status-color) 13%, transparent);
-  border-radius: 50%;
+  width: 112%;
+  height: 150%;
+  background: var(--task-status-color);
   content: "";
+  opacity: var(--motif-opacity);
   pointer-events: none;
-  transform: rotate(-3deg);
+  -webkit-mask: url("wave-motif.svg") left center / 400% 100% no-repeat;
+  mask: url("wave-motif.svg") left center / 400% 100% no-repeat;
 }
-.task-card:nth-child(even)::before { left: 18%; transform: rotate(3deg); }
+.task-card:nth-child(4n + 2)::before {
+  top: -42%;
+  height: 168%;
+  opacity: calc(var(--motif-opacity) - 0.01);
+  transform: scaleY(-1);
+  -webkit-mask-position: 33.333% center;
+  mask-position: 33.333% center;
+}
+.task-card:nth-child(4n + 3)::before {
+  top: -54%;
+  height: 190%;
+  transform: scaleX(-1);
+  -webkit-mask-position: 66.667% center;
+  mask-position: 66.667% center;
+}
+.task-card:nth-child(4n)::before {
+  top: 4%;
+  height: 138%;
+  opacity: calc(var(--motif-opacity) - 0.02);
+  transform: scale(-1, -1);
+  -webkit-mask-position: right center;
+  mask-position: right center;
+}
 .task-card > * { position: relative; z-index: 1; }
 .task-card.is-newly-created:not(.is-dragging) { animation: newly-created-task 3600ms ease-out; }
 .task-card.is-dragging { opacity: 0.42; box-shadow: 0 5px 16px rgb(var(--shadow-color) / 28%); }
