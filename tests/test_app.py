@@ -819,6 +819,7 @@ def test_index_renders_compact_task_ui(client):
     response = client.get("/")
     page = response.get_data(as_text=True)
     assert response.status_code == 200
+    assert '<link rel="icon" type="image/png" href="/static/aur-bataao-icon.png">' in page
     assert b"Visible task" in response.data
     assert b"task-list" in response.data
     assert b'new-task-dialog' in response.data
