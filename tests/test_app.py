@@ -1129,18 +1129,63 @@ def test_empty_state_hero_pool_contains_all_approved_native_emoji():
     )
 
 
-def test_index_count_excludes_done_tasks(client):
-    create_task(client, "Still active")
-    completed = create_task(client, "Already complete")
-    response = client.patch(
-        f"/api/tasks/{completed['id']}", json={"status": "done"}
-    )
-    assert response.status_code == 200
+def test_index_title_summary_shows_only_nonzero_counts_with_grammar(client):
+    first = create_task(client, "First active task")
+    second = create_task(client, "Second active task")
+    create_task(client, "To do task")
+    assert client.patch(
+        f"/api/tasks/{first['id']}", json={"status": "in_progress"}
+    ).status_code == 200
+    assert client.patch(
+        f"/api/tasks/{second['id']}", json={"status": "in_progress"}
+    ).status_code == 200
 
     response = client.get("/")
 
     assert response.status_code == 200
-    assert b'id="active-task-count" class="muted">1 task \xc2\xb7 Asia/Kolkata</span>' in response.data
+    assert b'id="active-task-count" class="muted">2 in progress</span>' in response.data
+    assert b"Asia/Kolkata" not in response.data.split(b"active-task-count", 1)[1].split(b"</span>", 1)[0]
+
+
+def test_index_title_summary_is_hidden_when_all_counts_are_zero(client):
+    create_task(client, "To do task")
+
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert b'id="active-task-count" class="muted" hidden></span>' in response.data
+
+
+def test_index_title_summary_uses_follow_up_grammar(client, app):
+    first = create_task(client, "First follow-up")
+    second = create_task(client, "Second follow-up")
+    for task in (first, second):
+        assert client.put(
+            f"/api/tasks/{task['id']}/waiting",
+            json={"person_name": "Ravi", "next_follow_up_on": "2099-01-10"},
+        ).status_code == 201
+
+    with app.app_context():
+        db = get_db()
+        db.execute(
+            "UPDATE task_waiting SET next_follow_up_on = '2000-01-01' WHERE task_id = ?",
+            (first["id"],),
+        )
+        db.commit()
+
+    response = client.get("/")
+    assert b'id="active-task-count" class="muted">1 needs follow-up</span>' in response.data
+
+    with app.app_context():
+        db = get_db()
+        db.execute(
+            "UPDATE task_waiting SET next_follow_up_on = '2000-01-01' WHERE task_id = ?",
+            (second["id"],),
+        )
+        db.commit()
+
+    response = client.get("/")
+    assert b'id="active-task-count" class="muted">2 need follow-up</span>' in response.data
 
 
 def test_index_shows_task_labels_in_collapsed_view_and_filter(client):

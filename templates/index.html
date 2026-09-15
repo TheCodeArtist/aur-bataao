@@ -33,8 +33,9 @@
         <h1 class="app-title">
           <img class="app-icon" src="{{ url_for('static', filename='aur-bataao-icon.jpg') }}" alt="Aur Bataao" width="56" height="56">
         </h1>
-        {% set active_task_count = tasks|rejectattr('status', 'equalto', 'done')|list|length %}
-        <span id="active-task-count" class="muted">{{ active_task_count }} task{% if active_task_count != 1 %}s{% endif %} · {{ timezone_name }}</span>
+        {% set in_progress_count = tasks|selectattr('status', 'equalto', 'in_progress')|list|length %}
+        {% set follow_up_count = tasks|selectattr('follow_up_due')|list|length %}
+        <span id="active-task-count" class="muted"{% if not in_progress_count and not follow_up_count %} hidden{% endif %}>{% if in_progress_count %}{{ in_progress_count }} in progress{% endif %}{% if in_progress_count and follow_up_count %} · {% endif %}{% if follow_up_count %}{{ follow_up_count }} {% if follow_up_count == 1 %}needs{% else %}need{% endif %} follow-up{% endif %}</span>
       </div>
       <div class="header-actions">
         <button id="theme-toggle" class="theme-toggle" type="button" role="switch" aria-checked="false" aria-label="Switch to dark mode" title="Switch to dark mode">
@@ -475,6 +476,10 @@
       </div>
     </section>
   </main>
+
+  <footer class="app-footer">
+    <em>Valar Morghulis. Valar Dohaeris First.</em>
+  </footer>
 
   <dialog id="new-task-dialog" class="new-task-dialog" aria-labelledby="new-task-title">
     <div class="dialog-heading">

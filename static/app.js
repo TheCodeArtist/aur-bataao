@@ -273,10 +273,16 @@ function applyTask(row, task) {
 function updateActiveTaskCount() {
   const countLabel = document.querySelector("#active-task-count");
   if (!countLabel) return;
-  const activeTaskCount = [...document.querySelectorAll(".task-row")]
-    .filter((task) => task.dataset.status !== "done").length;
-  const timezone = document.body.dataset.timezone;
-  countLabel.textContent = `${activeTaskCount} ${activeTaskCount === 1 ? "task" : "tasks"} · ${timezone}`;
+  const tasks = [...document.querySelectorAll(".task-row")];
+  const inProgressCount = tasks.filter((task) => task.dataset.status === "in_progress").length;
+  const followUpCount = tasks.filter((task) => task.dataset.followUpDue === "true").length;
+  const summaries = [];
+  if (inProgressCount) summaries.push(`${inProgressCount} in progress`);
+  if (followUpCount) {
+    summaries.push(`${followUpCount} ${followUpCount === 1 ? "needs" : "need"} follow-up`);
+  }
+  countLabel.textContent = summaries.join(" · ");
+  countLabel.hidden = summaries.length === 0;
 }
 
 function expandTaskDetails(row) {
