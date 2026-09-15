@@ -7,7 +7,31 @@ body { margin: 0; background: var(--bg); color: var(--text); }
 .app-title { margin: 0; line-height: 0; }
 .app-icon { display: block; width: 56px; height: 56px; border-radius: 10px; object-fit: contain; }
 .header-actions { display: flex; align-items: center; gap: 7px; }
-#view-toggle { width: 112px; }
+#view-toggle {
+  position: relative;
+  display: inline-flex;
+  width: 112px;
+  align-items: center;
+  justify-content: center;
+}
+.view-toggle-prompt {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  padding: 0 4px;
+  transform: translate(-50%, -50%);
+  color: var(--muted);
+  background: var(--bg);
+  font-size: 0.68rem;
+  line-height: 1;
+  opacity: 0;
+  white-space: nowrap;
+  pointer-events: none;
+  transition: opacity 120ms ease;
+}
+#view-toggle:is(:hover, :focus-visible) .view-toggle-prompt {
+  opacity: 1;
+}
 
 /* Focus view */
 body.focus-mode .manage-only,
@@ -47,6 +71,7 @@ body.focus-mode .focus-task-title {
   font-weight: 600;
   line-height: 1.45;
 }
+body.focus-mode .focus-task-context { color: var(--muted); font-size: 0.86rem; }
 body.focus-mode .task-label-filter { pointer-events: none; }
 body.focus-mode .task-label-filter.active_date { display: none; }
 body.focus-mode .badges { align-self: center; justify-content: flex-end; }
@@ -65,7 +90,8 @@ body.focus-mode .due-date { border-color: transparent; color: var(--muted); back
   border-top: 1px solid var(--line-subtle);
   background: var(--panel-subtle);
 }
-.focus-task-actions .complete-focus-task { min-width: 82px; }
+.focus-task-actions .complete-focus-task,
+.focus-task-actions .followed-up { min-width: 82px; }
 .focus-toggle-details {
   display: inline-grid;
   width: 36px;
@@ -228,6 +254,7 @@ body:has(.new-task-dialog[open]) { overflow: hidden; }
 .badge { display: inline-flex; align-items: center; min-height: 20px; padding: 1px 6px; border-radius: 999px; font-size: 0.72rem; font-weight: 650; white-space: nowrap; }
 .badge.danger { color: var(--danger); background: var(--danger-soft); }
 .badge.warning { color: var(--warning); background: var(--warning-soft); }
+.badge.waiting-badge { color: var(--warning); background: var(--warning-soft); }
 .badge.attachment-badge { color: var(--text); background: var(--surface-muted); }
 .badge.rank-badge { grid-area: rank; width: 34px; padding-inline: 4px; justify-content: center; color: var(--accent-ink); background: var(--accent-soft); font-variant-numeric: tabular-nums; }
 .badge.rank-badge[hidden] { display: none; }
@@ -268,6 +295,39 @@ button.task-label-filter[aria-pressed="true"] { color: var(--accent-text); backg
 .relationship-list .resolved .relationship-status { text-decoration: none; }
 .relationship-list .link-button { flex: 0 0 auto; }
 .link-button { min-height: 0; padding: 0; margin-left: 5px; border: 0; background: transparent; color: var(--accent-ink); font-size: 0.8rem; text-decoration: underline; text-underline-offset: 2px; }
+.waiting-summary { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 10px; font-size: 0.84rem; }
+.waiting-summary > span { color: var(--muted); text-align: right; }
+.waiting-fields { display: grid; grid-template-columns: minmax(0, 0.9fr) minmax(250px, 1.1fr); align-items: start; gap: 12px; }
+.waiting-form label { display: grid; align-content: start; gap: 5px; color: var(--text); font-size: 0.76rem; font-weight: 650; }
+.waiting-form input, .waiting-form textarea { width: 100%; color: var(--text); font-size: 0.84rem; font-weight: 400; }
+.waiting-form input { height: calc(var(--control-height) + 2px); }
+.waiting-form textarea { min-height: 56px; }
+.waiting-schedule { display: grid; grid-template-columns: minmax(150px, 1fr) 108px; align-items: end; gap: 5px 8px; }
+.waiting-schedule > label:first-child { grid-column: 1; }
+.waiting-schedule > .exact-time-field { grid-column: 2; }
+.waiting-schedule:has(> .exact-time-field[hidden]) > label:first-child { grid-column: 1 / -1; }
+.exact-time-field[hidden] { display: none !important; }
+.waiting-schedule > .toggle-follow-up-time,
+.waiting-schedule > .morning-hint { grid-column: 1 / -1; justify-self: start; }
+.waiting-schedule > .toggle-follow-up-time { margin: 1px 0 0; }
+.morning-hint { color: var(--muted); font-size: 0.72rem; font-weight: 400; }
+.waiting-note-field { margin-top: 10px; }
+.waiting-note-field small { font-weight: 400; }
+.waiting-actions { display: flex; align-items: center; gap: 7px; margin-top: 10px; }
+.waiting-form:not(.waiting-edit-form) .waiting-actions { justify-content: flex-end; }
+.waiting-actions .link-button { margin-left: auto; }
+.waiting-hint { margin: 0 0 10px; font-size: 0.82rem; }
+.follow-up-history { margin-top: 8px; font-size: 0.8rem; }
+.follow-up-history summary { color: var(--muted); cursor: pointer; }
+.follow-up-history li { display: flex; justify-content: space-between; gap: 8px; }
+.dialog-follow-up-schedule { display: grid; grid-template-columns: minmax(0, 1fr) 120px; gap: 4px 8px; }
+.dialog-follow-up-schedule label[for="follow-up-date"] { grid-column: 1; grid-row: 1; }
+.dialog-follow-up-schedule #follow-up-date { grid-column: 1; grid-row: 2; width: 100%; }
+.dialog-follow-up-schedule label[for="follow-up-time"] { grid-column: 2; grid-row: 1; }
+.dialog-follow-up-schedule #follow-up-time { grid-column: 2; grid-row: 2; width: 100%; }
+.dialog-follow-up-schedule:has(#follow-up-time[hidden]) #follow-up-date { grid-column: 1 / -1; }
+.dialog-follow-up-schedule .toggle-follow-up-time { grid-column: 1 / -1; justify-self: start; margin: 2px 0 0; }
+.dialog-follow-up-schedule .form-hint { grid-column: 1 / -1; margin-bottom: 0; }
 .attachment-list, .pending-attachments { list-style: none; padding: 0; margin: 4px 0 7px; }
 .attachment-item, .pending-attachment { display: flex; align-items: center; gap: 8px; min-height: 42px; padding: 5px; border-bottom: 1px solid var(--line-subtle); }
 .attachment-item:last-child, .pending-attachment:last-child { border-bottom: 0; }
@@ -337,6 +397,9 @@ button.task-label-filter[aria-pressed="true"] { color: var(--accent-text); backg
   .sort-control { margin-left: 0; }
   .task-details { padding: 12px; }
   .label-editor { grid-template-columns: 1fr; }
+  .waiting-fields { grid-template-columns: 1fr; }
+  .waiting-summary { align-items: flex-start; flex-direction: column; }
+  .waiting-summary > span { text-align: left; }
   .focus-next-action { margin: 16px 10px 0; }
   .focus-empty-actions { align-items: stretch; flex-direction: column-reverse; }
 }
@@ -372,4 +435,7 @@ button.task-label-filter[aria-pressed="true"] { color: var(--accent-text); backg
   .toolbar .filter-multi-select summary { width: 100%; }
   .toolbar .sort-control { margin-left: auto; }
   .task-controls { grid-template-columns: 1fr; }
+  .dialog-follow-up-schedule { grid-template-columns: 1fr; }
+  .dialog-follow-up-schedule label[for="follow-up-time"],
+  .dialog-follow-up-schedule #follow-up-time { grid-column: 1; grid-row: auto; }
 }

@@ -2,6 +2,8 @@
 
 A compact, single-user task tracker built with Flask, server-rendered HTML, vanilla JavaScript, and SQLite. It opens in the focused **Aur Bataao** view with one actionable task, an instant client-side next suggestion, and expandable updates and comments. The complete backlog remains available through **View all tasks**. New tasks are captured in a focused dialog, every task can hold files added through the picker, drag and drop, or clipboard paste, and rank sorting supports persistent drag or keyboard reordering in the backlog view.
 
+Tasks can also be marked as **Waiting on** a person. The task remains blocked while Aur Bataao records the last follow-up and the next reminder. A reminder can optionally have an exact time; date-only reminders become due at 9:00 AM in the configured user timezone. When the reminder arrives, the follow-up becomes an actionable card in the focused view; completing it schedules the next reminder, while **No longer blocked** returns the underlying task to **To do**. Choose **Waiting on someone…** from a task's status menu for quick access, or use the Waiting on section in its expanded details.
+
 ## Run locally (Windows PowerShell)
 
 ```powershell

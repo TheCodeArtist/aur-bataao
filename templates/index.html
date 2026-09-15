@@ -46,7 +46,10 @@
             <path d="M20 15.2A8.5 8.5 0 0 1 8.8 4a8.5 8.5 0 1 0 11.2 11.2Z"></path>
           </svg>
         </button>
-        <button id="view-toggle" type="button" class="quiet-button">View all tasks</button>
+        <button id="view-toggle" type="button" class="quiet-button">
+          <span class="view-toggle-prompt" aria-hidden="true">Switch Mode to</span>
+          <span class="view-toggle-label">View all tasks</span>
+        </button>
         <button id="open-task-dialog" type="button" class="primary new-task-button open-task-dialog">Add a Task...</button>
       </div>
     </header>
@@ -98,6 +101,7 @@
       </details>
       <label class="check"><input id="overdue-filter" type="checkbox"> Overdue</label>
       <label class="check"><input id="stalled-filter" type="checkbox"> Stalled</label>
+      <label class="check"><input id="follow-up-filter" type="checkbox"> Follow-ups due</label>
       <select id="sort-control" class="sort-control" aria-label="Sort tasks">
         <option value="smart">Sort: Smart</option>
         <option value="rank">Sort: Rank</option>
@@ -112,7 +116,7 @@
     <section id="task-list" class="task-list" data-sort="smart" aria-live="polite">
       {% for task in tasks %}
       {% set unresolved = task.blocked_by|rejectattr('resolved')|list %}
-      {% set actionable = task.status in ['todo', 'in_progress'] and not unresolved %}
+      {% set actionable = task.follow_up_due or (task.status in ['todo', 'in_progress'] and not unresolved) %}
       <article
         class="task-card task-row status-{{ task.status }}{% if task.id == focus_task_id %} is-focus-task{% endif %}"
         data-task-id="{{ task.id }}"
@@ -123,6 +127,11 @@
         data-label-ids="{{ task.labels|map(attribute='id')|join(' ') }}"
         data-overdue="{{ 'true' if task.overdue else 'false' }}"
         data-stalled="{{ 'true' if task.stalled else 'false' }}"
+        data-follow-up-due="{{ 'true' if task.follow_up_due else 'false' }}"
+        data-follow-up-date="{{ task.waiting.next_follow_up_on if task.waiting else '' }}"
+        data-follow-up-time="{{ task.waiting.effective_follow_up_time if task.waiting else default_follow_up_time }}"
+        data-follow-up-exact-time="{{ task.waiting.next_follow_up_time if task.waiting else '' }}"
+        data-waiting-on="{{ task.waiting.person_name if task.waiting else '' }}"
         data-actionable="{{ 'true' if actionable else 'false' }}"
         data-blocked="{{ 'true' if task.status == 'blocked' or unresolved else 'false' }}"
         data-unresolved-blocker-ids="{{ unresolved|map(attribute='id')|join(' ') }}"
@@ -142,7 +151,12 @@
           </div>
           <div class="task-summary">
             <input class="task-title manage-task-title" data-field="title" value="{{ task.title }}" maxlength="200" aria-label="Task title">
+            {% if task.follow_up_due %}
+            <div class="focus-task-title focus-only">Follow up with {{ task.waiting.person_name }}</div>
+            <div class="focus-task-context focus-only">About: {{ task.title }}</div>
+            {% else %}
             <div class="focus-task-title focus-only">{{ task.title }}</div>
+            {% endif %}
             <div class="task-label-list" aria-label="Labels for {{ task.title }}">
               {% for label in task.labels %}
               <button
@@ -160,6 +174,9 @@
             <span class="badge focus-status-badge focus-only">{{ status_labels[task.status] }}</span>
             {% if task.overdue %}<span class="badge danger derived-badge overdue-badge">overdue</span>{% endif %}
             {% if task.stalled %}<span class="badge warning derived-badge stalled-badge">stalled</span>{% endif %}
+            {% if task.waiting %}<span class="badge waiting-badge">waiting on {{ task.waiting.person_name }}</span>{% endif %}
+            {% if task.follow_up_overdue %}<span class="badge danger follow-up-badge">follow-up overdue</span>
+            {% elif task.follow_up_due %}<span class="badge warning follow-up-badge">follow-up today</span>{% endif %}
             {% if unresolved %}<span class="badge danger dependency-badge">blocked ×{{ unresolved|length }}</span>{% endif %}
             {% if task.attachments %}<span class="badge attachment-badge">📎 {{ task.attachments|length }}</span>{% endif %}
           </div>
@@ -168,6 +185,7 @@
               <option value="todo" {% if task.status == 'todo' %}selected{% endif %}>To do</option>
               <option value="in_progress" {% if task.status == 'in_progress' %}selected{% endif %}>In progress</option>
               <option value="blocked" {% if task.status == 'blocked' %}selected{% endif %}>Blocked</option>
+              <option value="waiting_person">Waiting on someone…</option>
               <option value="done" {% if task.status == 'done' %}selected{% endif %}>Done</option>
             </select>
             <input class="due-date" data-field="due_date" type="date" value="{{ task.due_date or '' }}" aria-label="Due date for {{ task.title }}">
@@ -187,7 +205,12 @@
               <path d="m5 7.5 5 5 5-5"></path>
             </svg>
           </button>
+          {% if task.follow_up_due %}
+          <button type="button" class="resolve-waiting">No longer blocked</button>
+          <button type="button" class="primary followed-up" data-person-name="{{ task.waiting.person_name }}">Followed up</button>
+          {% else %}
           <button type="button" class="primary complete-focus-task">Done</button>
+          {% endif %}
         </footer>
 
         <div id="task-details-{{ task.id }}" class="task-details" hidden>
@@ -241,6 +264,88 @@
                   <button type="submit">Add label</button>
                 </form>
               </div>
+
+              <div class="section-label">Waiting on</div>
+              {% if task.waiting %}
+              <div class="waiting-summary">
+                <strong>{{ task.waiting.person_name }}</strong>
+                <span>
+                  Last followed up:
+                  <strong>{% if task.waiting.last_followed_up_on %}{{ task.waiting.last_followed_up_on }} {{ task.waiting.last_followed_up_time }}{% else %}Never{% endif %}</strong>
+                  · Next:
+                  <strong>{% if task.waiting.next_follow_up_on %}{{ task.waiting.next_follow_up_on }}{% if task.waiting.next_follow_up_time %} {{ task.waiting.next_follow_up_time }}{% else %}, morning{% endif %}{% else %}No reminder{% endif %}</strong>
+                </span>
+              </div>
+              <form class="waiting-form waiting-edit-form">
+                <div class="waiting-fields">
+                  <label>
+                    <span>Person</span>
+                    <input name="person_name" maxlength="100" value="{{ task.waiting.person_name }}" autocomplete="off" required>
+                  </label>
+                  <div class="waiting-schedule follow-up-time-control">
+                    <label>
+                      <span>Next follow-up</span>
+                      <input name="next_follow_up_on" type="date" min="{{ today }}" value="{{ task.waiting.next_follow_up_on or '' }}">
+                    </label>
+                    <label class="exact-time-field"{% if not task.waiting.next_follow_up_time %} hidden{% endif %}>
+                      <span>Exact time</span>
+                      <input name="next_follow_up_time" type="time" value="{{ task.waiting.next_follow_up_time or '' }}">
+                    </label>
+                    <button type="button" class="link-button toggle-follow-up-time" aria-expanded="{{ 'true' if task.waiting.next_follow_up_time else 'false' }}">{{ 'Remove time' if task.waiting.next_follow_up_time else '+ Add time' }}</button>
+                    <small class="morning-hint">Without an exact time, it becomes due at 9:00 AM.</small>
+                  </div>
+                </div>
+                <label class="waiting-note-field">
+                  <span>Context <small>(optional)</small></span>
+                  <textarea name="note" rows="2" maxlength="1000" placeholder="What are you waiting for?">{{ task.waiting.note }}</textarea>
+                </label>
+                <div class="waiting-actions">
+                  <button type="submit">Save</button>
+                  <button type="button" class="followed-up" data-person-name="{{ task.waiting.person_name }}">Followed up</button>
+                  <button type="button" class="link-button resolve-waiting">No longer blocked</button>
+                </div>
+              </form>
+              {% if task.waiting.history %}
+              <details class="follow-up-history">
+                <summary>Recent follow-ups ({{ task.waiting.history|length }})</summary>
+                <ul class="compact-list">
+                  {% for follow_up in task.waiting.history %}
+                  <li>
+                    <span>{{ follow_up.followed_up_on }}{% if follow_up.note %} · {{ follow_up.note }}{% endif %}</span>
+                    <span class="muted">Next: {% if follow_up.next_follow_up_on %}{{ follow_up.next_follow_up_on }} {{ follow_up.next_follow_up_time or 'morning' }}{% else %}none{% endif %}</span>
+                  </li>
+                  {% endfor %}
+                </ul>
+              </details>
+              {% endif %}
+              {% else %}
+              <p class="waiting-hint muted">Track who you’re waiting on and when to follow up.</p>
+              <form class="waiting-form">
+                <div class="waiting-fields">
+                  <label>
+                    <span>Person</span>
+                    <input name="person_name" maxlength="100" placeholder="Who are you waiting on?" autocomplete="off" required>
+                  </label>
+                  <div class="waiting-schedule follow-up-time-control">
+                    <label>
+                      <span>Next follow-up</span>
+                      <input name="next_follow_up_on" type="date" min="{{ today }}" value="{{ default_follow_up_on }}">
+                    </label>
+                    <label class="exact-time-field" hidden>
+                      <span>Exact time</span>
+                      <input name="next_follow_up_time" type="time">
+                    </label>
+                    <button type="button" class="link-button toggle-follow-up-time" aria-expanded="false">+ Add time</button>
+                    <small class="morning-hint">Without an exact time, it becomes due at 9:00 AM.</small>
+                  </div>
+                </div>
+                <label class="waiting-note-field">
+                  <span>Context <small>(optional)</small></span>
+                  <textarea name="note" rows="2" maxlength="1000" placeholder="What are you waiting for?"></textarea>
+                </label>
+                <div class="waiting-actions"><button type="submit" class="primary">Mark as waiting</button></div>
+              </form>
+              {% endif %}
 
               <div class="section-label">Relationships</div>
               {% set blocker_ids = task.blocked_by|map(attribute='id')|list %}
@@ -357,7 +462,7 @@
     </section>
 
     <div id="focus-next-action" class="focus-next-action focus-only"{% if not focus_task_id %} hidden{% endif %}>
-      <button id="aur-bataao-button" type="button">Aur Bataao...</button>
+      <button id="aur-bataao-button" type="button">Kuch Aur Bataao</button>
     </div>
 
     <section id="focus-empty-state" class="focus-empty-state focus-only"{% if focus_task_id %} hidden{% endif %}>
@@ -398,6 +503,33 @@
 
       <div class="dialog-actions">
         <button type="button" class="cancel-new-task">Cancel</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="follow-up-dialog" class="new-task-dialog follow-up-dialog" aria-labelledby="follow-up-dialog-title">
+    <div class="dialog-heading">
+      <div>
+        <h2 id="follow-up-dialog-title">Followed up</h2>
+        <p id="follow-up-dialog-person"></p>
+      </div>
+      <button type="button" class="dialog-close" aria-label="Close follow-up dialog">×</button>
+    </div>
+    <form id="follow-up-form">
+      <input name="task_id" type="hidden">
+      <label class="field-label first" for="follow-up-note">Note <span class="optional">optional</span></label>
+      <textarea id="follow-up-note" name="note" rows="3" maxlength="1000" placeholder="What did they say?"></textarea>
+      <div class="dialog-follow-up-schedule follow-up-time-control">
+        <label class="field-label" for="follow-up-date">Remind me again</label>
+        <input id="follow-up-date" name="next_follow_up_on" type="date" min="{{ today }}" value="{{ default_follow_up_on }}">
+        <label class="field-label exact-time-field" for="follow-up-time" hidden>Exact time</label>
+        <input id="follow-up-time" class="exact-time-field" name="next_follow_up_time" type="time" hidden>
+        <button type="button" class="link-button toggle-follow-up-time" aria-expanded="false">+ Add time</button>
+        <p class="form-hint">Without an exact time, it becomes due at 9:00 AM. Clear the date for no reminder.</p>
+      </div>
+      <div class="dialog-actions">
+        <button type="button" class="cancel-follow-up">Cancel</button>
+        <button type="submit" class="primary">Save follow-up</button>
       </div>
     </form>
   </dialog>

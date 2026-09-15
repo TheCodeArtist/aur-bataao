@@ -243,8 +243,14 @@ function applyTask(row, task) {
   row.dataset.dueDate = task.due_date || "";
   row.dataset.overdue = String(Boolean(task.overdue));
   row.dataset.stalled = String(Boolean(task.stalled));
+  row.dataset.followUpDue = String(Boolean(task.follow_up_due));
+  row.dataset.followUpDate = task.waiting?.next_follow_up_on || "";
+  row.dataset.followUpTime = task.waiting?.effective_follow_up_time || "09:00";
+  row.dataset.followUpExactTime = task.waiting?.next_follow_up_time || "";
+  row.dataset.waitingOn = task.waiting?.person_name || "";
   row.dataset.actionable = String(
-    ["todo", "in_progress"].includes(task.status) && !hasUnresolvedBlockers,
+    task.follow_up_due
+    || (["todo", "in_progress"].includes(task.status) && !hasUnresolvedBlockers),
   );
   row.dataset.blocked = String(task.status === "blocked" || hasUnresolvedBlockers);
   row.dataset.unresolvedBlockerIds = unresolvedBlockerIds.join(" ");
@@ -272,12 +278,29 @@ function updateActiveTaskCount() {
   countLabel.textContent = `${activeTaskCount} ${activeTaskCount === 1 ? "task" : "tasks"} · ${timezone}`;
 }
 
+function expandTaskDetails(row) {
+  const details = row.querySelector(".task-details");
+  details.hidden = false;
+  row.querySelectorAll(".toggle-details, .focus-toggle-details").forEach((control) => {
+    control.setAttribute("aria-expanded", "true");
+  });
+  const focusToggle = row.querySelector(".focus-toggle-details");
+  focusToggle.setAttribute("aria-label", "Collapse task details and editing controls");
+  focusToggle.title = focusToggle.getAttribute("aria-label");
+}
+
 async function patchControl(control) {
   const row = taskRow(control);
   const field = control.dataset.field;
   const previous = control.dataset.previous ?? control.defaultValue;
   const value = control.value;
   if (value === previous) return;
+  if (field === "status" && value === "waiting_person") {
+    control.value = previous;
+    expandTaskDetails(row);
+    row.querySelector('.waiting-form input[name="person_name"]')?.focus();
+    return;
+  }
   control.dataset.previous = value;
   if (field === "status") {
     row.dataset.status = value;
@@ -297,6 +320,10 @@ async function patchControl(control) {
       fieldControl.value = result.task[field] ?? "";
       fieldControl.dataset.previous = fieldControl.value;
     });
+    if (field === "status" && row.dataset.waitingOn && value !== "blocked") {
+      location.reload();
+      return;
+    }
     applyTask(row, result.task);
   } catch (error) {
     control.value = previous;
@@ -321,16 +348,17 @@ document.addEventListener("click", async (event) => {
     const row = taskRow(toggle);
     const details = row.querySelector(".task-details");
     const opening = details.hidden;
-    details.hidden = !opening;
-    row.querySelectorAll(".toggle-details, .focus-toggle-details").forEach((control) => {
-      control.setAttribute("aria-expanded", String(opening));
-    });
-    const focusToggle = row.querySelector(".focus-toggle-details");
-    focusToggle.setAttribute(
-      "aria-label",
-      opening ? "Collapse task details and editing controls" : "Expand task details and editing controls",
-    );
-    focusToggle.title = focusToggle.getAttribute("aria-label");
+    if (opening) {
+      expandTaskDetails(row);
+    } else {
+      details.hidden = true;
+      row.querySelectorAll(".toggle-details, .focus-toggle-details").forEach((control) => {
+        control.setAttribute("aria-expanded", "false");
+      });
+      const focusToggle = row.querySelector(".focus-toggle-details");
+      focusToggle.setAttribute("aria-label", "Expand task details and editing controls");
+      focusToggle.title = focusToggle.getAttribute("aria-label");
+    }
     return;
   }
 
@@ -602,11 +630,125 @@ document.querySelectorAll(".comment-form").forEach((form) => {
   });
 });
 
+document.querySelectorAll(".waiting-form").forEach((form) => {
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const row = taskRow(form);
+    const button = form.querySelector("button[type='submit']");
+    button.disabled = true;
+    try {
+      await api(`/api/tasks/${row.dataset.taskId}/waiting`, {
+        method: "PUT",
+        body: JSON.stringify({
+          person_name: form.elements.person_name.value,
+          note: form.elements.note.value,
+          next_follow_up_on: form.elements.next_follow_up_on.value || null,
+          next_follow_up_time: form.elements.next_follow_up_time.value || null,
+        }),
+      });
+      location.reload();
+    } catch (error) {
+      button.disabled = false;
+      notify(error.message, true);
+    }
+  });
+});
+
+const followUpDialog = document.querySelector("#follow-up-dialog");
+const followUpForm = document.querySelector("#follow-up-form");
+const followUpPerson = document.querySelector("#follow-up-dialog-person");
+
+function setExactTimeVisibility(container, visible, focus = false) {
+  const input = container.querySelector('input[name="next_follow_up_time"]');
+  container.querySelectorAll(".exact-time-field").forEach((field) => {
+    field.hidden = !visible;
+  });
+  const toggle = container.querySelector(".toggle-follow-up-time");
+  toggle.textContent = visible ? "Remove time" : "+ Add time";
+  toggle.setAttribute("aria-expanded", String(visible));
+  if (visible && !input.value) input.value = "09:00";
+  if (!visible) input.value = "";
+  if (visible && focus) input.focus();
+}
+
+document.querySelectorAll(".follow-up-time-control").forEach((container) => {
+  const toggle = container.querySelector(".toggle-follow-up-time");
+  const dateInput = container.querySelector('input[name="next_follow_up_on"]');
+  toggle.addEventListener("click", () => {
+    const showing = toggle.getAttribute("aria-expanded") === "true";
+    if (!showing && !dateInput.value) {
+      notify("Choose a follow-up date before adding a time", true);
+      dateInput.focus();
+      return;
+    }
+    setExactTimeVisibility(container, !showing, !showing);
+  });
+  dateInput.addEventListener("change", () => {
+    if (!dateInput.value) setExactTimeVisibility(container, false);
+  });
+});
+
+document.querySelectorAll(".followed-up").forEach((button) => {
+  button.addEventListener("click", () => {
+    const row = taskRow(button);
+    followUpForm.reset();
+    followUpForm.elements.task_id.value = row.dataset.taskId;
+    followUpForm.elements.next_follow_up_time.value = row.dataset.followUpExactTime;
+    setExactTimeVisibility(followUpForm, Boolean(row.dataset.followUpExactTime));
+    followUpPerson.textContent = `Waiting on ${button.dataset.personName || row.dataset.waitingOn}`;
+    followUpDialog.showModal();
+    requestAnimationFrame(() => followUpForm.elements.note.focus());
+  });
+});
+
+followUpDialog.querySelector(".dialog-close").addEventListener("click", () => followUpDialog.close());
+followUpDialog.querySelector(".cancel-follow-up").addEventListener("click", () => followUpDialog.close());
+followUpDialog.addEventListener("click", (event) => {
+  if (event.target === followUpDialog) followUpDialog.close();
+});
+followUpForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const button = followUpForm.querySelector("button[type='submit']");
+  button.disabled = true;
+  try {
+    await api(`/api/tasks/${followUpForm.elements.task_id.value}/follow-ups`, {
+      method: "POST",
+      body: JSON.stringify({
+        note: followUpForm.elements.note.value,
+        next_follow_up_on: followUpForm.elements.next_follow_up_on.value || null,
+        next_follow_up_time: followUpForm.elements.next_follow_up_time.value || null,
+      }),
+    });
+    location.reload();
+  } catch (error) {
+    button.disabled = false;
+    notify(error.message, true);
+  }
+});
+
+document.querySelectorAll(".resolve-waiting").forEach((button) => {
+  button.addEventListener("click", async () => {
+    const row = taskRow(button);
+    button.disabled = true;
+    try {
+      await api(`/api/tasks/${row.dataset.taskId}/waiting/resolve`, {
+        method: "POST",
+        body: "{}",
+      });
+      location.reload();
+    } catch (error) {
+      button.disabled = false;
+      notify(error.message, true);
+    }
+  });
+});
+
 const searchFilter = document.querySelector("#search-filter");
 const statusFilter = document.querySelector("#status-filter");
 const labelFilter = document.querySelector("#label-filter");
 const overdueFilter = document.querySelector("#overdue-filter");
 const stalledFilter = document.querySelector("#stalled-filter");
+const followUpFilter = document.querySelector("#follow-up-filter");
 const blockedViewIndicator = document.querySelector("#blocked-view-indicator");
 let blockedView = false;
 
@@ -711,6 +853,7 @@ function applyFilters() {
   const labelsAreFiltered = labels.size !== labelOptions.length;
   const overdueOnly = overdueFilter.checked;
   const stalledOnly = stalledFilter.checked;
+  const followUpsOnly = followUpFilter.checked;
   let visibleTasks = 0;
   document.querySelectorAll(".task-row").forEach((row) => {
     const rowLabels = row.dataset.labelIds.split(" ").filter(Boolean);
@@ -720,6 +863,7 @@ function applyFilters() {
       (labelsAreFiltered && !rowLabels.some((label) => labels.has(label))) ||
       (overdueOnly && row.dataset.overdue !== "true") ||
       (stalledOnly && row.dataset.stalled !== "true") ||
+      (followUpsOnly && row.dataset.followUpDue !== "true") ||
       (blockedView && row.dataset.blocked !== "true")
     );
     if (!row.hidden) visibleTasks += 1;
@@ -731,7 +875,7 @@ function applyFilters() {
   if (emptyState) emptyState.hidden = visibleTasks !== 0;
   updateRankPresentation();
 }
-[searchFilter, overdueFilter, stalledFilter].forEach((control) => {
+[searchFilter, overdueFilter, stalledFilter, followUpFilter].forEach((control) => {
   control.addEventListener("input", () => {
     blockedView = false;
     blockedViewIndicator.hidden = true;
@@ -765,6 +909,15 @@ function compareRank(first, second) {
 }
 
 function compareSmart(first, second) {
+  const followUpDifference = Number(second.dataset.followUpDue === "true")
+    - Number(first.dataset.followUpDue === "true");
+  if (followUpDifference) return followUpDifference;
+  if (first.dataset.followUpDue === "true" && second.dataset.followUpDue === "true") {
+    const followUpDateDifference = first.dataset.followUpDate.localeCompare(second.dataset.followUpDate);
+    if (followUpDateDifference) return followUpDateDifference;
+    const followUpTimeDifference = first.dataset.followUpTime.localeCompare(second.dataset.followUpTime);
+    if (followUpTimeDifference) return followUpTimeDifference;
+  }
   const statusDifference = smartStatusOrder[first.dataset.status] - smartStatusOrder[second.dataset.status];
   if (statusDifference) return statusDifference;
   const firstDueDate = first.dataset.dueDate || "9999-12-31";
@@ -779,6 +932,7 @@ const focusEmptyState = document.querySelector("#focus-empty-state");
 const focusNextAction = document.querySelector("#focus-next-action");
 const aurBataaoButton = document.querySelector("#aur-bataao-button");
 const viewToggle = document.querySelector("#view-toggle");
+const viewToggleLabel = viewToggle.querySelector(".view-toggle-label");
 
 function actionableTaskRows() {
   return taskRows()
@@ -811,7 +965,7 @@ function showAnotherTask(currentRow) {
 function showManageView({ blockedOnly = false } = {}) {
   document.body.classList.remove("focus-mode");
   document.body.classList.add("manage-mode");
-  viewToggle.textContent = "Aur Bataao";
+  viewToggleLabel.textContent = "Aur Bataao";
   viewToggle.setAttribute("aria-label", "Switch to Aur Bataao view");
   blockedView = blockedOnly;
   blockedViewIndicator.hidden = !blockedOnly;
@@ -821,7 +975,7 @@ function showManageView({ blockedOnly = false } = {}) {
 function showFocusView() {
   document.body.classList.remove("manage-mode");
   document.body.classList.add("focus-mode");
-  viewToggle.textContent = "View all tasks";
+  viewToggleLabel.textContent = "View all tasks";
   viewToggle.setAttribute("aria-label", "Switch to all tasks view");
   renderFocusView();
 }
@@ -838,6 +992,7 @@ document.querySelector("#view-blocked-tasks").addEventListener("click", () => {
   searchFilter.value = "";
   overdueFilter.checked = false;
   stalledFilter.checked = false;
+  followUpFilter.checked = false;
   statusFilter.querySelectorAll("[data-filter-value]").forEach((checkbox) => {
     checkbox.checked = checkbox.value !== "done";
   });
@@ -1141,17 +1296,35 @@ setSortMode(savedSortPreference(), false);
 renderFocusView();
 emphasizeNewlyCreatedTask();
 
-// Reconcile within a minute of midnight in the configured user timezone.
-function dateInConfiguredTimezone() {
+// Reconcile at midnight and surface timed follow-ups within a minute.
+function dateTimeInConfiguredTimezone() {
   const parts = new Intl.DateTimeFormat("en-CA", {
     timeZone: document.body.dataset.timezone,
     year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", hourCycle: "h23",
   }).formatToParts(new Date());
   const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
-  return `${values.year}-${values.month}-${values.day}`;
+  return {
+    date: `${values.year}-${values.month}-${values.day}`,
+    minute: `${values.hour}:${values.minute}`,
+  };
+}
+
+function pendingFollowUpBecameDue(localDateTime) {
+  const currentMinute = `${localDateTime.date}T${localDateTime.minute}`;
+  return taskRows().some((row) => (
+    row.dataset.status === "blocked"
+    && row.dataset.followUpDue !== "true"
+    && row.dataset.followUpDate
+    && `${row.dataset.followUpDate}T${row.dataset.followUpTime}` <= currentMinute
+  ));
 }
 setInterval(async () => {
-  if (dateInConfiguredTimezone() !== document.body.dataset.today) {
+  const localDateTime = dateTimeInConfiguredTimezone();
+  if (
+    localDateTime.date !== document.body.dataset.today
+    || pendingFollowUpBecameDue(localDateTime)
+  ) {
     try {
       await api("/api/reconcile", { method: "POST", body: "{}" });
       location.reload();

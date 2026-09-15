@@ -27,6 +27,7 @@ PREVIEWABLE_IMAGE_TYPES = {"image/gif", "image/jpeg", "image/png", "image/webp"}
 RANK_SPACING = 1024
 SQLITE_INTEGER_MIN = -(2**63)
 SQLITE_INTEGER_MAX = 2**63 - 1
+DEFAULT_FOLLOW_UP_TIME = "09:00"
 EMPTY_STATE_HEROES = (
     ("🍻", "Clinking beer mugs"),
     ("🥂", "Clinking glasses"),
@@ -95,6 +96,7 @@ def init_db() -> None:
     db = get_db()
     db.executescript(schema)
     migrate_task_ranks(db)
+    migrate_waiting_times(db)
     migrate_legacy_subtasks(db)
     db.commit()
 
@@ -151,6 +153,16 @@ def migrate_task_ranks(db: sqlite3.Connection) -> None:
     )
 
 
+def migrate_waiting_times(db: sqlite3.Connection) -> None:
+    """Add optional exact reminder times without changing date-only reminders."""
+    columns = {
+        row["name"]
+        for row in db.execute("PRAGMA table_info(task_waiting)").fetchall()
+    }
+    if "next_follow_up_time" not in columns:
+        db.execute("ALTER TABLE task_waiting ADD COLUMN next_follow_up_time TEXT")
+
+
 def _new_task_rank_key(db: sqlite3.Connection) -> int:
     first_rank = db.execute("SELECT MIN(rank_key) AS rank_key FROM tasks").fetchone()["rank_key"]
     if first_rank is None:
@@ -200,6 +212,14 @@ def iso_utc(value: datetime) -> str:
 
 def local_date_for(value: datetime) -> str:
     return value.astimezone(current_app.config["TZINFO"]).date().isoformat()
+
+
+def local_now() -> datetime:
+    return datetime.now(current_app.config["TZINFO"])
+
+
+def local_today() -> date:
+    return local_now().date()
 
 
 def parse_utc(value: str) -> datetime:
@@ -338,6 +358,13 @@ def _task_or_404(db: sqlite3.Connection, task_id: int) -> sqlite3.Row:
 
         abort(404)
     return row
+
+
+def _active_waiting(db: sqlite3.Connection, task_id: int) -> sqlite3.Row | None:
+    return db.execute(
+        "SELECT * FROM task_waiting WHERE task_id = ? AND resolved_at IS NULL",
+        (task_id,),
+    ).fetchone()
 
 
 def _attachment_path(stored_name: str) -> Path:
@@ -483,7 +510,74 @@ def _serialize_task(db: sqlite3.Connection, row: sqlite3.Row) -> dict[str, Any]:
             (row["id"],),
         ).fetchall()
     ]
-    today = datetime.now(current_app.config["TZINFO"]).date()
+    waiting_row = _active_waiting(db, row["id"])
+    item["waiting"] = None
+    if waiting_row is not None:
+        waiting = dict(waiting_row)
+        last_followed_up = (
+            parse_utc(waiting["last_followed_up_at"]).astimezone(
+                current_app.config["TZINFO"]
+            )
+            if waiting["last_followed_up_at"]
+            else None
+        )
+        waiting["last_followed_up_on"] = (
+            last_followed_up.date().isoformat() if last_followed_up else None
+        )
+        waiting["last_followed_up_time"] = (
+            last_followed_up.strftime("%H:%M") if last_followed_up else None
+        )
+        waiting["effective_follow_up_time"] = (
+            waiting["next_follow_up_time"] or DEFAULT_FOLLOW_UP_TIME
+        )
+        waiting["history"] = []
+        for event in db.execute(
+            """
+            SELECT occurred_at_utc, local_date, details_json
+            FROM task_events
+            WHERE task_id = ? AND event_type = 'followed_up'
+            ORDER BY occurred_at_utc DESC, id DESC
+            LIMIT 5
+            """,
+            (row["id"],),
+        ).fetchall():
+            try:
+                details = json.loads(event["details_json"])
+            except (json.JSONDecodeError, TypeError):
+                details = {}
+            followed_up_at = parse_utc(event["occurred_at_utc"]).astimezone(
+                current_app.config["TZINFO"]
+            )
+            waiting["history"].append(
+                {
+                    "followed_up_on": event["local_date"],
+                    "followed_up_time": followed_up_at.strftime("%H:%M"),
+                    "note": details.get("note", ""),
+                    "next_follow_up_on": details.get("next_follow_up_on"),
+                    "next_follow_up_time": details.get("next_follow_up_time"),
+                }
+            )
+        item["waiting"] = waiting
+
+    now_local = local_now()
+    today = now_local.date()
+    next_follow_up_on = waiting_row["next_follow_up_on"] if waiting_row else None
+    follow_up_deadline = None
+    if next_follow_up_on:
+        effective_time = waiting_row["next_follow_up_time"] or DEFAULT_FOLLOW_UP_TIME
+        follow_up_deadline = datetime.combine(
+            date.fromisoformat(next_follow_up_on),
+            datetime.strptime(effective_time, "%H:%M").time(),
+            tzinfo=current_app.config["TZINFO"],
+        )
+    item["follow_up_due"] = bool(
+        row["status"] == "blocked"
+        and follow_up_deadline
+        and follow_up_deadline <= now_local
+    )
+    item["follow_up_overdue"] = bool(
+        item["follow_up_due"] and date.fromisoformat(next_follow_up_on) < today
+    )
     yesterday_date = today - timedelta(days=1)
     yesterday = yesterday_date.isoformat()
     item["overdue"] = bool(row["due_date"] and date.fromisoformat(row["due_date"]) < today and row["status"] != "done")
@@ -540,6 +634,54 @@ def _valid_due_date(value: Any) -> str | None:
         raise ValueError("Due date must be YYYY-MM-DD") from exc
 
 
+def _valid_follow_up_date(value: Any) -> str | None:
+    if value in (None, ""):
+        return None
+    if not isinstance(value, str):
+        raise ValueError("Next follow-up must be YYYY-MM-DD")
+    try:
+        parsed = date.fromisoformat(value)
+    except ValueError as exc:
+        raise ValueError("Next follow-up must be YYYY-MM-DD") from exc
+    if parsed < local_today():
+        raise ValueError("Next follow-up cannot be in the past")
+    return parsed.isoformat()
+
+
+def _valid_follow_up_time(value: Any) -> str | None:
+    if value in (None, ""):
+        return None
+    if not isinstance(value, str):
+        raise ValueError("Follow-up time must be HH:MM")
+    try:
+        parsed = datetime.strptime(value, "%H:%M")
+    except ValueError as exc:
+        raise ValueError("Follow-up time must be HH:MM") from exc
+    if parsed.strftime("%H:%M") != value:
+        raise ValueError("Follow-up time must be HH:MM")
+    return value
+
+
+def _person_name(value: Any) -> str:
+    if not isinstance(value, str):
+        raise ValueError("Enter who you are waiting on")
+    name = " ".join(value.split())
+    if not name or len(name) > 100:
+        raise ValueError("Person name must be between 1 and 100 characters")
+    return name
+
+
+def _waiting_note(value: Any) -> str:
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise ValueError("Note must be text")
+    note = value.strip()
+    if len(note) > 1000:
+        raise ValueError("Note must be at most 1000 characters")
+    return note
+
+
 def _would_create_dependency_cycle(db: sqlite3.Connection, blocked_id: int, blocker_id: int) -> bool:
     row = db.execute(
         """
@@ -554,6 +696,78 @@ def _would_create_dependency_cycle(db: sqlite3.Connection, blocked_id: int, bloc
         (blocker_id, blocked_id),
     ).fetchone()
     return row is not None
+
+
+def _change_task_status(
+    db: sqlite3.Connection,
+    task: sqlite3.Row,
+    new_status: str,
+    now: datetime,
+) -> bool:
+    old_status = task["status"]
+    if old_status == new_status:
+        return False
+
+    db.execute(
+        "UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?",
+        (new_status, iso_utc(now), task["id"]),
+    )
+    counts = old_status == "in_progress" or new_status == "in_progress"
+    _record_event(
+        db,
+        task["id"],
+        "status_changed",
+        counts_as_progress=counts,
+        active_for_label=counts,
+        details={"old_status": old_status, "new_status": new_status},
+        now=now,
+    )
+    if new_status == "done":
+        event_type = "dependency_resolved"
+        counts_as_progress = True
+    elif old_status == "done":
+        event_type = "dependency_reopened"
+        counts_as_progress = False
+    else:
+        return True
+
+    for dependent in db.execute(
+        "SELECT blocked_task_id FROM task_dependencies WHERE blocker_task_id = ?",
+        (task["id"],),
+    ).fetchall():
+        _record_event(
+            db,
+            dependent["blocked_task_id"],
+            event_type,
+            counts_as_progress=counts_as_progress,
+            details={"blocker_task_id": task["id"]},
+            now=now,
+        )
+    return True
+
+
+def _resolve_active_waiting(
+    db: sqlite3.Connection,
+    task_id: int,
+    now: datetime,
+    *,
+    reason: str,
+) -> sqlite3.Row | None:
+    waiting = _active_waiting(db, task_id)
+    if waiting is None:
+        return None
+    db.execute(
+        "UPDATE task_waiting SET resolved_at = ?, updated_at = ? WHERE id = ?",
+        (iso_utc(now), iso_utc(now), waiting["id"]),
+    )
+    _record_event(
+        db,
+        task_id,
+        "waiting_resolved",
+        details={"person_name": waiting["person_name"], "reason": reason},
+        now=now,
+    )
+    return waiting
 
 
 def register_routes(app: Flask) -> None:
@@ -578,9 +792,29 @@ def register_routes(app: Flask) -> None:
         focus_task = next(
             (
                 task
-                for task in tasks
-                if task["status"] in {"todo", "in_progress"}
-                and not any(not blocker["resolved"] for blocker in task["blocked_by"])
+                for task in sorted(
+                    tasks,
+                    key=lambda item: (
+                        0 if item["follow_up_due"] else 1,
+                        (
+                            item["waiting"]["next_follow_up_on"]
+                            if item["follow_up_due"]
+                            else ""
+                        ),
+                        (
+                            item["waiting"]["effective_follow_up_time"]
+                            if item["follow_up_due"]
+                            else ""
+                        ),
+                    ),
+                )
+                if task["follow_up_due"]
+                or (
+                    task["status"] in {"todo", "in_progress"}
+                    and not any(
+                        not blocker["resolved"] for blocker in task["blocked_by"]
+                    )
+                )
             ),
             None,
         )
@@ -611,7 +845,9 @@ def register_routes(app: Flask) -> None:
             manual_label_choices=manual_label_choices,
             status_labels=STATUS_LABELS,
             timezone_name=current_app.config["USER_TIMEZONE"],
-            today=datetime.now(current_app.config["TZINFO"]).date().isoformat(),
+            today=local_today().isoformat(),
+            default_follow_up_on=(local_today() + timedelta(days=3)).isoformat(),
+            default_follow_up_time=DEFAULT_FOLLOW_UP_TIME,
             max_attachment_bytes=current_app.config["MAX_ATTACHMENT_BYTES"],
             max_attachments_per_task=current_app.config["MAX_ATTACHMENTS_PER_TASK"],
             max_upload_bytes=current_app.config["MAX_CONTENT_LENGTH"],
@@ -781,54 +1017,26 @@ def register_routes(app: Flask) -> None:
         now = utc_now()
         changed_fields = {key: value for key, value in changes.items() if value != task[key]}
         if changed_fields:
-            assignments = ", ".join(f"{key} = ?" for key in changed_fields)
-            db.execute(
-                f"UPDATE tasks SET {assignments}, updated_at = ? WHERE id = ?",
-                (*changed_fields.values(), iso_utc(now), task_id),
-            )
-            if "status" in changed_fields:
-                old_status = task["status"]
-                new_status = changed_fields["status"]
-                counts = old_status == "in_progress" or new_status == "in_progress"
+            new_status = changed_fields.pop("status", None)
+            if new_status is not None:
+                _change_task_status(db, task, new_status, now)
+                if new_status != "blocked":
+                    _resolve_active_waiting(
+                        db, task_id, now, reason="status_changed"
+                    )
+            if changed_fields:
+                assignments = ", ".join(f"{key} = ?" for key in changed_fields)
+                db.execute(
+                    f"UPDATE tasks SET {assignments}, updated_at = ? WHERE id = ?",
+                    (*changed_fields.values(), iso_utc(now), task_id),
+                )
                 _record_event(
                     db,
                     task_id,
-                    "status_changed",
-                    counts_as_progress=counts,
-                    active_for_label=counts,
-                    details={"old_status": old_status, "new_status": new_status},
+                    "task_updated",
+                    details={"fields": list(changed_fields)},
                     now=now,
                 )
-                if new_status == "done" and old_status != "done":
-                    dependents = db.execute(
-                        "SELECT blocked_task_id FROM task_dependencies WHERE blocker_task_id = ?",
-                        (task_id,),
-                    ).fetchall()
-                    for dependent in dependents:
-                        _record_event(
-                            db,
-                            dependent["blocked_task_id"],
-                            "dependency_resolved",
-                            counts_as_progress=True,
-                            details={"blocker_task_id": task_id},
-                            now=now,
-                        )
-                elif old_status == "done" and new_status != "done":
-                    dependents = db.execute(
-                        "SELECT blocked_task_id FROM task_dependencies WHERE blocker_task_id = ?",
-                        (task_id,),
-                    ).fetchall()
-                    for dependent in dependents:
-                        _record_event(
-                            db,
-                            dependent["blocked_task_id"],
-                            "dependency_reopened",
-                            details={"blocker_task_id": task_id},
-                            now=now,
-                        )
-            non_status = [key for key in changed_fields if key != "status"]
-            if non_status:
-                _record_event(db, task_id, "task_updated", details={"fields": non_status}, now=now)
             db.commit()
         return jsonify(task=_serialize_task(db, _task_or_404(db, task_id)))
 
@@ -952,6 +1160,203 @@ def register_routes(app: Flask) -> None:
         )
         db.commit()
         return jsonify(comment_id=cursor.lastrowid), 201
+
+    @app.put("/api/tasks/<int:task_id>/waiting")
+    def set_waiting(task_id: int):
+        body = _json_body()
+        unknown = set(body) - {
+            "person_name",
+            "note",
+            "next_follow_up_on",
+            "next_follow_up_time",
+        }
+        if unknown:
+            raise ValueError(f"Unsupported field: {sorted(unknown)[0]}")
+
+        db = get_db()
+        task = _task_or_404(db, task_id)
+        waiting = _active_waiting(db, task_id)
+        if waiting is None and "person_name" not in body:
+            raise ValueError("Enter who you are waiting on")
+
+        person_name = _person_name(
+            body.get("person_name", waiting["person_name"] if waiting else None)
+        )
+        note = _waiting_note(body.get("note", waiting["note"] if waiting else ""))
+        if "next_follow_up_on" in body:
+            next_follow_up_on = _valid_follow_up_date(body["next_follow_up_on"])
+        elif waiting is not None:
+            next_follow_up_on = waiting["next_follow_up_on"]
+        else:
+            next_follow_up_on = (local_today() + timedelta(days=3)).isoformat()
+        if "next_follow_up_time" in body:
+            next_follow_up_time = _valid_follow_up_time(
+                body["next_follow_up_time"]
+            )
+        elif waiting is not None:
+            next_follow_up_time = waiting["next_follow_up_time"]
+        else:
+            next_follow_up_time = None
+        if next_follow_up_on is None:
+            if next_follow_up_time is not None:
+                raise ValueError("Choose a follow-up date before adding a time")
+            next_follow_up_time = None
+
+        now = utc_now()
+        created = waiting is None
+        try:
+            if created:
+                db.execute(
+                    """
+                    INSERT INTO task_waiting(
+                        task_id, person_name, note, started_at,
+                        next_follow_up_on, next_follow_up_time, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        task_id,
+                        person_name,
+                        note,
+                        iso_utc(now),
+                        next_follow_up_on,
+                        next_follow_up_time,
+                        iso_utc(now),
+                    ),
+                )
+                _record_event(
+                    db,
+                    task_id,
+                    "waiting_started",
+                    details={
+                        "person_name": person_name,
+                        "note": note,
+                        "next_follow_up_on": next_follow_up_on,
+                        "next_follow_up_time": next_follow_up_time,
+                    },
+                    now=now,
+                )
+            else:
+                changed = (
+                    person_name != waiting["person_name"]
+                    or note != waiting["note"]
+                    or next_follow_up_on != waiting["next_follow_up_on"]
+                    or next_follow_up_time != waiting["next_follow_up_time"]
+                )
+                if changed:
+                    db.execute(
+                        """
+                        UPDATE task_waiting
+                        SET person_name = ?, note = ?, next_follow_up_on = ?,
+                            next_follow_up_time = ?, updated_at = ?
+                        WHERE id = ? AND resolved_at IS NULL
+                        """,
+                        (
+                            person_name,
+                            note,
+                            next_follow_up_on,
+                            next_follow_up_time,
+                            iso_utc(now),
+                            waiting["id"],
+                        ),
+                    )
+                    _record_event(
+                        db,
+                        task_id,
+                        "waiting_updated",
+                        details={
+                            "person_name": person_name,
+                            "note": note,
+                            "next_follow_up_on": next_follow_up_on,
+                            "next_follow_up_time": next_follow_up_time,
+                        },
+                        now=now,
+                    )
+            _change_task_status(db, task, "blocked", now)
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+
+        response = jsonify(task=_serialize_task(db, _task_or_404(db, task_id)))
+        return (response, 201) if created else response
+
+    @app.post("/api/tasks/<int:task_id>/follow-ups")
+    def record_follow_up(task_id: int):
+        body = _json_body()
+        unknown = set(body) - {
+            "note", "next_follow_up_on", "next_follow_up_time"
+        }
+        if unknown:
+            raise ValueError(f"Unsupported field: {sorted(unknown)[0]}")
+        note = _waiting_note(body.get("note"))
+        next_follow_up_on = _valid_follow_up_date(
+            body.get(
+                "next_follow_up_on",
+                (local_today() + timedelta(days=3)).isoformat(),
+            )
+        )
+        db = get_db()
+        _task_or_404(db, task_id)
+        waiting = _active_waiting(db, task_id)
+        if waiting is None:
+            raise ValueError("This task is not waiting on anyone")
+        next_follow_up_time = _valid_follow_up_time(
+            body["next_follow_up_time"]
+            if "next_follow_up_time" in body
+            else waiting["next_follow_up_time"]
+        )
+        if next_follow_up_on is None and next_follow_up_time is not None:
+            raise ValueError("Choose a follow-up date before adding a time")
+        now = utc_now()
+        db.execute(
+            """
+            UPDATE task_waiting
+            SET last_followed_up_at = ?, next_follow_up_on = ?,
+                next_follow_up_time = ?, updated_at = ?
+            WHERE id = ? AND resolved_at IS NULL
+            """,
+            (
+                iso_utc(now),
+                next_follow_up_on,
+                next_follow_up_time,
+                iso_utc(now),
+                waiting["id"],
+            ),
+        )
+        _record_event(
+            db,
+            task_id,
+            "followed_up",
+            counts_as_progress=True,
+            details={
+                "person_name": waiting["person_name"],
+                "note": note,
+                "next_follow_up_on": next_follow_up_on,
+                "next_follow_up_time": next_follow_up_time,
+            },
+            now=now,
+        )
+        db.commit()
+        return jsonify(task=_serialize_task(db, _task_or_404(db, task_id))), 201
+
+    @app.post("/api/tasks/<int:task_id>/waiting/resolve")
+    def resolve_waiting(task_id: int):
+        body = _json_body()
+        unknown = set(body) - {"status"}
+        if unknown:
+            raise ValueError(f"Unsupported field: {sorted(unknown)[0]}")
+        status = body.get("status", "todo")
+        if not isinstance(status, str) or status not in {"todo", "in_progress", "done"}:
+            raise ValueError("Resolved waiting status must be To do, In progress, or Done")
+
+        db = get_db()
+        task = _task_or_404(db, task_id)
+        now = utc_now()
+        if _resolve_active_waiting(db, task_id, now, reason="resolved") is None:
+            raise ValueError("This task is not waiting on anyone")
+        _change_task_status(db, task, status, now)
+        db.commit()
+        return jsonify(task=_serialize_task(db, _task_or_404(db, task_id)))
 
     @app.post("/api/tasks/<int:task_id>/labels")
     def add_label(task_id: int):

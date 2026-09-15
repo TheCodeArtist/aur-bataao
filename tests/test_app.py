@@ -6,8 +6,10 @@ from pathlib import Path
 
 import pytest
 import start
+import app as app_module
 
 from app import (
+    DEFAULT_FOLLOW_UP_TIME,
     EMPTY_STATE_HEROES,
     RANK_SPACING,
     create_app,
@@ -120,6 +122,21 @@ def test_existing_database_gets_rank_column_and_preserves_smart_order(tmp_path):
         )
         """
     )
+    legacy_db.execute(
+        """
+        CREATE TABLE task_waiting (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+            person_name TEXT NOT NULL,
+            note TEXT NOT NULL DEFAULT '',
+            started_at TEXT NOT NULL,
+            last_followed_up_at TEXT,
+            next_follow_up_on TEXT,
+            updated_at TEXT NOT NULL,
+            resolved_at TEXT
+        )
+        """
+    )
     timestamp = "2026-09-10T00:00:00+00:00"
     legacy_db.executemany(
         """
@@ -150,8 +167,16 @@ def test_existing_database_gets_rank_column_and_preserves_smart_order(tmp_path):
             for row in db.execute("SELECT title FROM tasks ORDER BY rank_key")
         ]
         ranks = [row["rank_key"] for row in db.execute("SELECT rank_key FROM tasks")]
+        waiting_table = db.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'task_waiting'"
+        ).fetchone()
+        waiting_columns = {
+            row["name"] for row in db.execute("PRAGMA table_info(task_waiting)")
+        }
 
     assert "rank_key" in columns
+    assert waiting_table is not None
+    assert "next_follow_up_time" in waiting_columns
     assert ranked_titles == ["In progress", "Newer todo", "Older todo"]
     assert len(ranks) == len(set(ranks))
     assert all(rank is not None for rank in ranks)
@@ -410,6 +435,282 @@ def test_overdue_is_derived(client):
     assert response.get_json()["task"]["overdue"] is True
 
 
+def test_waiting_on_person_blocks_task_and_can_be_edited(client, app):
+    task = create_task(client, "Get budget approved")
+
+    response = client.put(
+        f"/api/tasks/{task['id']}/waiting",
+        json={
+            "person_name": "  Ravi   Kumar ",
+            "note": "Needs finance sign-off",
+            "next_follow_up_on": "2099-01-10",
+        },
+    )
+
+    assert response.status_code == 201
+    waiting_task = response.get_json()["task"]
+    assert waiting_task["status"] == "blocked"
+    assert waiting_task["waiting"]["person_name"] == "Ravi Kumar"
+    assert waiting_task["waiting"]["note"] == "Needs finance sign-off"
+    assert waiting_task["waiting"]["next_follow_up_on"] == "2099-01-10"
+    assert waiting_task["waiting"]["next_follow_up_time"] is None
+    assert waiting_task["waiting"]["effective_follow_up_time"] == DEFAULT_FOLLOW_UP_TIME
+    assert waiting_task["follow_up_due"] is False
+
+    response = client.put(
+        f"/api/tasks/{task['id']}/waiting",
+        json={"person_name": "Meera", "note": "", "next_follow_up_on": None},
+    )
+
+    assert response.status_code == 200
+    assert response.get_json()["task"]["waiting"]["person_name"] == "Meera"
+    assert response.get_json()["task"]["waiting"]["next_follow_up_on"] is None
+    with app.app_context():
+        db = get_db()
+        assert db.execute(
+            "SELECT count(*) FROM task_waiting WHERE task_id = ? AND resolved_at IS NULL",
+            (task["id"],),
+        ).fetchone()[0] == 1
+        event_types = [
+            row["event_type"]
+            for row in db.execute(
+                "SELECT event_type FROM task_events WHERE task_id = ? ORDER BY id",
+                (task["id"],),
+            )
+        ]
+        assert "waiting_started" in event_types
+        assert "waiting_updated" in event_types
+        assert "status_changed" in event_types
+
+
+def test_follow_up_records_last_contact_history_and_next_reminder(client, app):
+    task = create_task(client, "Get legal review")
+    client.put(
+        f"/api/tasks/{task['id']}/waiting",
+        json={"person_name": "Anika", "next_follow_up_on": "2099-01-10"},
+    )
+
+    response = client.post(
+        f"/api/tasks/{task['id']}/follow-ups",
+        json={
+            "note": "Sent a message",
+            "next_follow_up_on": "2099-01-13",
+            "next_follow_up_time": "11:45",
+        },
+    )
+
+    assert response.status_code == 201
+    waiting = response.get_json()["task"]["waiting"]
+    assert waiting["last_followed_up_at"] is not None
+    assert waiting["last_followed_up_on"] is not None
+    assert waiting["last_followed_up_time"] is not None
+    assert waiting["next_follow_up_on"] == "2099-01-13"
+    assert waiting["next_follow_up_time"] == "11:45"
+    assert waiting["history"] == [
+        {
+            "followed_up_on": waiting["last_followed_up_on"],
+            "followed_up_time": waiting["last_followed_up_time"],
+            "note": "Sent a message",
+            "next_follow_up_on": "2099-01-13",
+            "next_follow_up_time": "11:45",
+        }
+    ]
+    with app.app_context():
+        event = get_db().execute(
+            "SELECT counts_as_progress FROM task_events WHERE task_id = ? AND event_type = 'followed_up'",
+            (task["id"],),
+        ).fetchone()
+        assert event["counts_as_progress"] == 1
+
+
+def test_exact_follow_up_time_is_optional_and_validated_atomically(client):
+    task = create_task(client, "Get design feedback")
+    response = client.put(
+        f"/api/tasks/{task['id']}/waiting",
+        json={
+            "person_name": "Neha",
+            "next_follow_up_on": "2099-01-10",
+            "next_follow_up_time": "14:30",
+        },
+    )
+
+    assert response.status_code == 201
+    waiting = response.get_json()["task"]["waiting"]
+    assert waiting["next_follow_up_time"] == "14:30"
+    assert waiting["effective_follow_up_time"] == "14:30"
+
+    invalid = client.put(
+        f"/api/tasks/{task['id']}/waiting",
+        json={
+            "person_name": "Neha",
+            "next_follow_up_on": "2099-01-10",
+            "next_follow_up_time": "24:00",
+        },
+    )
+
+    assert invalid.status_code == 400
+    assert "HH:MM" in invalid.get_json()["error"]
+    unchanged = client.put(
+        f"/api/tasks/{task['id']}/waiting",
+        json={"person_name": "Neha"},
+    ).get_json()["task"]["waiting"]
+    assert unchanged["next_follow_up_time"] == "14:30"
+
+
+def test_date_only_follow_up_becomes_due_at_nine_am(client, app, monkeypatch):
+    task = create_task(client, "Get morning confirmation")
+    client.put(
+        f"/api/tasks/{task['id']}/waiting",
+        json={"person_name": "Arun", "next_follow_up_on": "2099-01-10"},
+    )
+    with app.app_context():
+        db = get_db()
+        db.execute(
+            "UPDATE task_waiting SET next_follow_up_on = '2026-09-15' WHERE task_id = ?",
+            (task["id"],),
+        )
+        db.commit()
+
+    monkeypatch.setattr(
+        app_module,
+        "local_now",
+        lambda: datetime(2026, 9, 15, 8, 59, tzinfo=app.config["TZINFO"]),
+    )
+    before_nine = client.get("/").get_data(as_text=True)
+    before_markup = before_nine.split(f'data-task-id="{task["id"]}"', 1)[1].split(
+        "</article>", 1
+    )[0]
+    assert 'data-follow-up-time="09:00"' in before_markup
+    assert 'data-follow-up-due="false"' in before_markup
+    assert "is-focus-task" not in before_nine
+
+    monkeypatch.setattr(
+        app_module,
+        "local_now",
+        lambda: datetime(2026, 9, 15, 9, 0, tzinfo=app.config["TZINFO"]),
+    )
+    at_nine = client.get("/").get_data(as_text=True)
+    at_nine_markup = at_nine.split(f'data-task-id="{task["id"]}"', 1)[1].split(
+        "</article>", 1
+    )[0]
+    assert 'data-follow-up-due="true"' in at_nine_markup
+    assert "is-focus-task" in at_nine
+
+
+def test_exact_follow_up_time_controls_when_reminder_becomes_due(client, app, monkeypatch):
+    task = create_task(client, "Get afternoon confirmation")
+    client.put(
+        f"/api/tasks/{task['id']}/waiting",
+        json={
+            "person_name": "Arun",
+            "next_follow_up_on": "2099-01-10",
+            "next_follow_up_time": "14:30",
+        },
+    )
+    with app.app_context():
+        db = get_db()
+        db.execute(
+            "UPDATE task_waiting SET next_follow_up_on = '2026-09-15' WHERE task_id = ?",
+            (task["id"],),
+        )
+        db.commit()
+
+    monkeypatch.setattr(
+        app_module,
+        "local_now",
+        lambda: datetime(2026, 9, 15, 14, 29, tzinfo=app.config["TZINFO"]),
+    )
+    assert 'data-follow-up-due="false"' in client.get("/").get_data(as_text=True)
+
+    monkeypatch.setattr(
+        app_module,
+        "local_now",
+        lambda: datetime(2026, 9, 15, 14, 30, tzinfo=app.config["TZINFO"]),
+    )
+    assert 'data-follow-up-due="true"' in client.get("/").get_data(as_text=True)
+
+
+def test_due_follow_up_is_prioritized_as_the_next_action(client, app):
+    moving = create_task(client, "Already moving")
+    client.patch(f"/api/tasks/{moving['id']}", json={"status": "in_progress"})
+    waiting = create_task(client, "Get launch approval")
+    client.put(
+        f"/api/tasks/{waiting['id']}/waiting",
+        json={"person_name": "Ravi", "next_follow_up_on": "2099-01-10"},
+    )
+    with app.app_context():
+        db = get_db()
+        db.execute(
+            "UPDATE task_waiting SET next_follow_up_on = '2000-01-01' WHERE task_id = ?",
+            (waiting["id"],),
+        )
+        db.commit()
+
+    page = client.get("/").get_data(as_text=True)
+    waiting_markup = page.split(f'data-task-id="{waiting["id"]}"', 1)[1].split(
+        "</article>", 1
+    )[0]
+
+    assert f'class="task-card task-row status-blocked is-focus-task"\n        data-task-id="{waiting["id"]}"' in page
+    assert 'data-follow-up-due="true"' in waiting_markup
+    assert 'data-actionable="true"' in waiting_markup
+    assert 'class="focus-task-title focus-only">Follow up with Ravi</div>' in waiting_markup
+    assert 'class="focus-task-context focus-only">About: Get launch approval</div>' in waiting_markup
+    assert 'class="primary followed-up"' in waiting_markup
+    assert "follow-up overdue" in waiting_markup
+
+
+def test_resolving_wait_returns_task_to_todo_and_preserves_history(client, app):
+    task = create_task(client, "Get a decision")
+    client.put(
+        f"/api/tasks/{task['id']}/waiting",
+        json={"person_name": "Sam", "next_follow_up_on": "2099-01-10"},
+    )
+
+    response = client.post(f"/api/tasks/{task['id']}/waiting/resolve", json={})
+
+    assert response.status_code == 200
+    resolved = response.get_json()["task"]
+    assert resolved["status"] == "todo"
+    assert resolved["waiting"] is None
+    assert resolved["follow_up_due"] is False
+    with app.app_context():
+        waiting = get_db().execute(
+            "SELECT resolved_at FROM task_waiting WHERE task_id = ?", (task["id"],)
+        ).fetchone()
+        assert waiting["resolved_at"] is not None
+
+
+def test_changing_status_resolves_waiting_and_invalid_reminders_are_atomic(client, app):
+    task = create_task(client, "Get an answer")
+    invalid = client.put(
+        f"/api/tasks/{task['id']}/waiting",
+        json={"person_name": "Sam", "next_follow_up_on": "2000-01-01"},
+    )
+    assert invalid.status_code == 400
+    assert "past" in invalid.get_json()["error"]
+    with app.app_context():
+        db = get_db()
+        assert db.execute("SELECT count(*) FROM task_waiting").fetchone()[0] == 0
+        assert db.execute(
+            "SELECT status FROM tasks WHERE id = ?", (task["id"],)
+        ).fetchone()["status"] == "todo"
+
+    client.put(
+        f"/api/tasks/{task['id']}/waiting",
+        json={"person_name": "Sam", "next_follow_up_on": None},
+    )
+    response = client.patch(f"/api/tasks/{task['id']}", json={"status": "in_progress"})
+
+    assert response.status_code == 200
+    assert response.get_json()["task"]["status"] == "in_progress"
+    assert response.get_json()["task"]["waiting"] is None
+    with app.app_context():
+        assert get_db().execute(
+            "SELECT resolved_at FROM task_waiting WHERE task_id = ?", (task["id"],)
+        ).fetchone()["resolved_at"] is not None
+
+
 def test_removed_automatic_label_waits_for_later_progress(client, app):
     task = create_task(client, "Respect label override")
     response = client.patch(f"/api/tasks/{task['id']}", json={"status": "in_progress"})
@@ -458,6 +759,8 @@ def test_index_renders_compact_task_ui(client):
     assert b'class="rank-handle"' in response.data
     assert b'data-rank-key=' in response.data
     assert b'id="view-toggle"' in response.data
+    assert b'<span class="view-toggle-prompt" aria-hidden="true">Switch Mode to</span>' in response.data
+    assert b'<span class="view-toggle-label">View all tasks</span>' in response.data
     assert b'id="view-all-tasks"' not in response.data
     assert b'id="back-to-aur-bataao"' not in response.data
     assert b'class="toggle-chevron"' in response.data
@@ -628,6 +931,26 @@ def test_expanded_task_sections_use_compact_dividers():
     assert "border-top: 0;" in first_section_rule
 
 
+def test_waiting_form_layout_is_compact_and_progressively_discloses_time(client):
+    task = create_task(client, "Await review")
+    page = client.get("/").get_data(as_text=True)
+    task_markup = page.split(f'data-task-id="{task["id"]}"', 1)[1].split(
+        "</article>", 1
+    )[0]
+    layout = (Path(__file__).parents[1] / "static" / "app.css").read_text(
+        encoding="utf-8"
+    )
+
+    assert "Track who you’re waiting on and when to follow up." in task_markup
+    assert 'class="exact-time-field" hidden' in task_markup
+    assert 'class="primary">Mark as waiting</button>' in task_markup
+    assert ".exact-time-field[hidden] { display: none !important; }" in layout
+    waiting_fields = layout.split(".waiting-fields {", 1)[1].split("}", 1)[0]
+    assert "align-items: start;" in waiting_fields
+    waiting_input = layout.split(".waiting-form input {", 1)[1].split("}", 1)[0]
+    assert "height: calc(var(--control-height) + 2px);" in waiting_input
+
+
 def test_index_renders_accessible_theme_toggle(client):
     page = client.get("/").get_data(as_text=True)
 
@@ -690,11 +1013,11 @@ def test_index_defaults_to_one_actionable_task(client):
     assert 'class="disclosure-chevron" viewBox="0 0 20 20"' in page
     assert 'aria-controls="task-details-' in page
     assert 'class="focus-title-editor focus-only" data-field="title"' in page
-    assert ">Aur Bataao...</button>" in page
+    assert ">Kuch Aur Bataao</button>" in page
     focused_article = page.split(
         f'data-task-id="{in_progress["id"]}"', 1
     )[1].split("</article>", 1)[0]
-    assert "Aur Bataao..." not in focused_article
+    assert "Kuch Aur Bataao" not in focused_article
     assert 'id="focus-next-action" class="focus-next-action focus-only"' in page
     assert 'id="aur-bataao-button"' in page
     focus_actions = focused_article.split(
