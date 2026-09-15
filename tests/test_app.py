@@ -1010,7 +1010,7 @@ def test_waiting_form_layout_is_compact_and_progressively_discloses_time(client)
 
     assert "Track who you’re waiting on and when to follow up." in task_markup
     assert 'class="exact-time-field" hidden' in task_markup
-    assert 'class="primary">Mark as waiting</button>' in task_markup
+    assert '<button type="submit">Mark as waiting</button>' in task_markup
     assert ".exact-time-field[hidden] { display: none !important; }" in layout
     waiting_fields = layout.split(".waiting-fields {", 1)[1].split("}", 1)[0]
     assert "align-items: start;" in waiting_fields
