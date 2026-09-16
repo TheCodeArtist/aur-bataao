@@ -223,7 +223,7 @@
             <input name="return_view" type="hidden" value="focus">
             <button type="submit">No longer waiting</button>
           </form>
-          <button type="button" class="primary followed-up" data-person-name="{{ task.waiting.person_name }}">Followed up</button>
+          <button type="button" class="primary followed-up" data-person-name="{{ task.waiting.person_name }}">Followed up, still waiting…</button>
           {% else %}
           <form method="post" action="{{ url_for('update_task_form', task_id=task.id) }}">
             <input name="status" type="hidden" value="done">
@@ -341,7 +341,7 @@
                 </label>
                 <div class="waiting-actions">
                   <button type="submit">Save</button>
-                  <button type="button" class="followed-up" data-person-name="{{ task.waiting.person_name }}">Followed up</button>
+                  <button type="button" class="followed-up" data-person-name="{{ task.waiting.person_name }}">Followed up, still waiting…</button>
                   <button type="submit" class="link-button" form="resolve-waiting-{{ task.id }}" formnovalidate>No longer waiting</button>
                 </div>
               </form>
@@ -583,7 +583,7 @@
   <dialog id="follow-up-dialog" class="new-task-dialog follow-up-dialog" aria-labelledby="follow-up-dialog-title">
     <div class="dialog-heading">
       <div>
-        <h2 id="follow-up-dialog-title">Followed up</h2>
+        <h2 id="follow-up-dialog-title">Followed up, still waiting</h2>
         <p id="follow-up-dialog-person"></p>
       </div>
       <button type="button" class="dialog-close" aria-label="Close follow-up dialog">×</button>
@@ -592,10 +592,10 @@
       <input name="task_id" type="hidden">
       <input name="return_view" type="hidden" value="focus">
       <input name="expand" type="hidden" value="true">
-      <label class="field-label first" for="follow-up-note">Note <span class="optional">optional</span></label>
-      <textarea id="follow-up-note" name="note" rows="3" maxlength="1000" placeholder="What did they say?"></textarea>
+      <label class="field-label first" for="follow-up-note">Context <span class="optional">(optional)</span></label>
+      <textarea id="follow-up-note" name="note" rows="3" maxlength="1000" placeholder="What happened when you followed up?"></textarea>
       <div class="dialog-follow-up-schedule follow-up-time-control">
-        <label class="field-label" for="follow-up-date">Remind me again</label>
+        <label class="field-label" for="follow-up-date">Next follow-up</label>
         <input id="follow-up-date" name="next_follow_up_on" type="date" min="{{ today }}" value="{{ default_follow_up_on }}">
         <label class="field-label exact-time-field" for="follow-up-time" hidden>Exact time</label>
         <input id="follow-up-time" class="exact-time-field" name="next_follow_up_time" type="time" hidden>
