@@ -122,7 +122,8 @@ body.focus-mode .due-date { border-color: transparent; color: var(--muted); back
   border-top: 1px solid var(--line-subtle);
   background: var(--panel-subtle);
 }
-.focus-task-actions .complete-focus-task,
+.focus-task-actions form { display: contents; }
+.focus-task-actions form .primary,
 .focus-task-actions .followed-up { min-width: 82px; }
 .focus-toggle-details {
   display: inline-grid;
@@ -360,6 +361,8 @@ body:has(.new-task-dialog[open]) { overflow: hidden; }
 .task-title { overflow: hidden; width: 100%; min-height: 26px; height: 26px; padding-block: 2px; border-color: transparent; background: transparent; font-weight: 600; text-overflow: ellipsis; }
 .task-title:hover, .task-title:focus { border-color: var(--line); background: var(--panel); }
 .task-title:focus { text-overflow: clip; }
+.inline-field-form { display: contents; }
+.inline-action-form { display: inline; margin: 0; }
 .task-controls { display: grid; grid-area: controls; grid-template-columns: 116px var(--date-input-width); align-items: center; gap: 6px; }
 .status-select, .due-date { width: 100%; min-width: 0; min-height: 30px; height: 30px; padding-block: 0; border-color: transparent; background: transparent; font-size: 0.85rem; line-height: normal; }
 .status-select:is(:hover, :focus), .due-date:is(:hover, :focus) { border-color: var(--line); background: var(--panel); }
@@ -383,6 +386,7 @@ body:has(.new-task-dialog[open]) { overflow: hidden; }
 .label-chip { display: inline-flex; align-items: center; gap: 3px; min-height: 19px; height: 19px; padding: 1px 7px; border: 0; border-radius: 999px; background: var(--surface-muted); color: var(--text); font-size: 0.72rem; line-height: 17px; white-space: nowrap; }
 .label-chip.active_date { color: var(--accent-ink); background: var(--accent-soft); }
 .label-chip > button { flex: 0 0 15px; width: 15px; min-width: 15px; height: 15px; min-height: 15px; padding: 0; border: 0; border-radius: 50%; color: inherit; background: transparent; line-height: 13px; }
+.label-chip > .inline-action-form button { flex: 0 0 15px; width: 15px; min-width: 15px; height: 15px; min-height: 15px; padding: 0; border: 0; border-radius: 50%; color: inherit; background: transparent; line-height: 13px; }
 .label-editor { display: grid; grid-template-columns: minmax(145px, 0.42fr) minmax(220px, 1fr); align-items: start; gap: 6px; margin-top: 5px; }
 .label-editor .inline-form { margin-top: 0; }
 .task-label-picker { width: 100%; }
@@ -425,6 +429,7 @@ button.task-label-filter[aria-pressed="true"] { color: var(--accent-text); backg
 .relationship-status { color: var(--muted); font-size: 0.75rem; text-decoration: none; }
 .relationship-list .resolved .relationship-status { text-decoration: none; }
 .relationship-list .link-button { flex: 0 0 auto; }
+.relationship-list .inline-action-form { flex: 0 0 auto; }
 .link-button { min-height: 0; padding: 0; margin-left: 5px; border: 0; background: transparent; color: var(--accent-ink); font-size: 0.8rem; text-decoration: underline; text-underline-offset: 2px; }
 .waiting-summary { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 10px; font-size: 0.84rem; }
 .waiting-summary > span { color: var(--muted); text-align: right; }

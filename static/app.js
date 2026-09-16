@@ -2,8 +2,6 @@ const toast = document.querySelector("#toast");
 const maxAttachmentBytes = Number(document.body.dataset.maxAttachmentBytes);
 const maxAttachmentsPerTask = Number(document.body.dataset.maxAttachments);
 const maxUploadBytes = Number(document.body.dataset.maxUploadBytes);
-const newlyCreatedTaskStorageKey = "aur-bataao-newly-created-task";
-const taskReturnViewStorageKey = "aur-bataao-task-return-view";
 const themeStorageKey = "aur-bataao-theme";
 const themeToggle = document.querySelector("#theme-toggle");
 const darkModePreference = window.matchMedia("(prefers-color-scheme: dark)");
@@ -153,29 +151,27 @@ function bindDropzone(zone, onFiles) {
   });
 }
 
-async function uploadTaskAttachments(zone, files) {
+function submitTaskAttachments(zone, files) {
   const row = taskRow(zone);
   const selectionError = attachmentError(files, Number(zone.dataset.attachmentCount));
   if (selectionError) {
     notify(selectionError, true);
     return;
   }
-  const formData = new FormData();
-  files.forEach((file, index) => formData.append("attachments", file, uploadFilename(file, index)));
-  zone.classList.add("is-uploading");
-  zone.querySelectorAll("button, input").forEach((control) => { control.disabled = true; });
-  try {
-    await api(`/api/tasks/${row.dataset.taskId}/attachments`, {
-      method: "POST",
-      body: formData,
-    });
-    notify(`${files.length} attachment${files.length === 1 ? "" : "s"} added`);
-    reloadAndRestoreTaskView();
-  } catch (error) {
-    zone.classList.remove("is-uploading");
-    zone.querySelectorAll("button, input").forEach((control) => { control.disabled = false; });
-    notify(error.message, true);
+  if (typeof DataTransfer === "undefined") {
+    notify("Use Choose files to attach files in this browser", true);
+    return;
   }
+  const transfer = new DataTransfer();
+  files.forEach((file, index) => transfer.items.add(new File(
+    [file],
+    uploadFilename(file, index),
+    { type: file.type, lastModified: file.lastModified },
+  )));
+  zone.querySelector(".attachment-input").files = transfer.files;
+  zone.classList.add("is-uploading");
+  zone.querySelectorAll("button").forEach((control) => { control.disabled = true; });
+  zone.closest("form").requestSubmit();
 }
 
 function renderLabels(row, labels) {
@@ -185,13 +181,25 @@ function renderLabels(row, labels) {
     chip.className = `label-chip ${label.type}`;
     chip.dataset.labelId = label.id;
     chip.append(document.createTextNode(`${label.name} `));
+    const form = document.createElement("form");
+    form.className = "inline-action-form";
+    form.method = "post";
+    form.action = `/tasks/${row.dataset.taskId}/labels/${label.id}/remove`;
+    const returnView = document.createElement("input");
+    returnView.type = "hidden";
+    returnView.name = "return_view";
+    returnView.value = currentTaskView();
+    const expand = document.createElement("input");
+    expand.type = "hidden";
+    expand.name = "expand";
+    expand.value = "1";
     const button = document.createElement("button");
-    button.type = "button";
-    button.className = "remove-label";
+    button.type = "submit";
     button.title = "Remove label";
     button.setAttribute("aria-label", `Remove ${label.name}`);
     button.textContent = "×";
-    chip.append(button);
+    form.append(returnView, expand, button);
+    chip.append(form);
     return chip;
   }));
 
@@ -302,11 +310,6 @@ async function patchControl(control) {
   const value = control.value;
   if (value === previous) return;
   control.dataset.previous = value;
-  if (field === "status") {
-    row.dataset.status = value;
-    row.classList.remove("status-todo", "status-in_progress", "status-done");
-    row.classList.add(`status-${value}`);
-  }
   try {
     const result = await api(`/api/tasks/${row.dataset.taskId}`, {
       method: "PATCH",
@@ -320,26 +323,36 @@ async function patchControl(control) {
       fieldControl.value = result.task[field] ?? "";
       fieldControl.dataset.previous = fieldControl.value;
     });
-    if (field === "status" && row.dataset.waitingOn && value === "done") {
-      reloadAndRestoreTaskView();
-      return;
-    }
     applyTask(row, result.task);
   } catch (error) {
     control.value = previous;
     control.dataset.previous = previous;
-    if (field === "status") {
-      row.dataset.status = previous;
-      row.classList.remove("status-todo", "status-in_progress", "status-done");
-      row.classList.add(`status-${previous}`);
-    }
     notify(error.message, true);
   }
 }
 
 document.querySelectorAll("[data-field]").forEach((control) => {
   control.dataset.previous = control.value;
-  control.addEventListener(control.tagName === "TEXTAREA" || control.dataset.field === "title" ? "blur" : "change", () => patchControl(control));
+  if (control.dataset.field === "status") {
+    control.addEventListener("change", () => {
+      const returnView = control.form.querySelector(".return-view-field");
+      if (returnView) returnView.value = currentTaskView();
+      control.form.requestSubmit();
+    });
+    return;
+  }
+  control.addEventListener(
+    control.tagName === "TEXTAREA" || control.dataset.field === "title" ? "blur" : "change",
+    () => patchControl(control),
+  );
+});
+document.querySelectorAll(".inline-field-form").forEach((form) => {
+  form.addEventListener("submit", (event) => {
+    const control = form.querySelector("[data-field]");
+    if (control?.dataset.field === "status") return;
+    event.preventDefault();
+    if (control) patchControl(control);
+  });
 });
 
 document.addEventListener("click", async (event) => {
@@ -373,65 +386,7 @@ document.addEventListener("click", async (event) => {
     return;
   }
 
-  const removeLabel = event.target.closest(".remove-label");
-  if (removeLabel) {
-    const row = taskRow(removeLabel);
-    const chip = removeLabel.closest(".label-chip");
-    chip.hidden = true;
-    try {
-      await api(`/api/tasks/${row.dataset.taskId}/labels/${chip.dataset.labelId}`, { method: "DELETE" });
-      removeRenderedLabel(row, chip.dataset.labelId);
-    } catch (error) {
-      chip.hidden = false;
-      notify(error.message, true);
-    }
-    return;
-  }
-
-  const removeRelationship = event.target.closest(".remove-relationship");
-  if (removeRelationship) {
-    removeRelationship.disabled = true;
-    try {
-      await api(
-        `/api/tasks/${removeRelationship.dataset.blockedTaskId}/dependencies/${removeRelationship.dataset.blockerTaskId}`,
-        { method: "DELETE" },
-      );
-      reloadAndRestoreTaskView();
-    } catch (error) {
-      removeRelationship.disabled = false;
-      notify(error.message, true);
-    }
-    return;
-  }
-
-  const removeAttachment = event.target.closest(".remove-attachment");
-  if (removeAttachment) {
-    const row = taskRow(removeAttachment);
-    const item = removeAttachment.closest(".attachment-item");
-    removeAttachment.disabled = true;
-    try {
-      await api(`/api/tasks/${row.dataset.taskId}/attachments/${item.dataset.attachmentId}`, {
-        method: "DELETE",
-      });
-      reloadAndRestoreTaskView();
-    } catch (error) {
-      removeAttachment.disabled = false;
-      notify(error.message, true);
-    }
-  }
 });
-
-async function submitAndReload(form, url, body) {
-  const button = form.querySelector("button[type='submit']");
-  button.disabled = true;
-  try {
-    await api(url, { method: "POST", body: JSON.stringify(body) });
-    reloadAndRestoreTaskView();
-  } catch (error) {
-    button.disabled = false;
-    notify(error.message, true);
-  }
-}
 
 const newTaskDialog = document.querySelector("#new-task-dialog");
 const newTaskForm = document.querySelector("#new-task-form");
@@ -454,16 +409,10 @@ function showTaskView(view) {
   }
 }
 
-function rememberTaskView(view = currentTaskView()) {
-  try {
-    sessionStorage.setItem(taskReturnViewStorageKey, view);
-  } catch (_) { /* Storage can be unavailable in privacy modes. */ }
-}
-
-function reloadAndRestoreTaskView(view = currentTaskView()) {
-  rememberTaskView(view);
-  location.reload();
-}
+document.addEventListener("submit", (event) => {
+  const returnView = event.target.elements?.namedItem("return_view");
+  if (returnView) returnView.value = currentTaskView();
+});
 
 function renderPendingAttachments() {
   pendingAttachmentList.replaceChildren(...pendingAttachments.map((file, index) => {
@@ -487,6 +436,15 @@ function renderPendingAttachments() {
     item.append(details, remove);
     return item;
   }));
+  if (typeof DataTransfer !== "undefined") {
+    const transfer = new DataTransfer();
+    pendingAttachments.forEach((file, index) => transfer.items.add(new File(
+      [file],
+      uploadFilename(file, index),
+      { type: file.type, lastModified: file.lastModified },
+    )));
+    document.querySelector("#new-task-attachments").files = transfer.files;
+  }
 }
 
 function stageAttachments(files) {
@@ -545,59 +503,20 @@ newTaskDialog.addEventListener("paste", (event) => {
   }
 });
 
-newTaskForm.addEventListener("submit", async (event) => {
-  event.preventDefault();
-  const title = newTaskInput.value.trim();
-  if (!title) return;
-
+newTaskForm.addEventListener("submit", () => {
   newTaskForm.setAttribute("aria-busy", "true");
   updateNewTaskSubmit();
-  const formData = new FormData();
-  formData.append("title", title);
-  pendingAttachments.forEach((file, index) => {
-    formData.append("attachments", file, uploadFilename(file, index));
-  });
-  try {
-    const result = await api("/api/tasks", { method: "POST", body: formData });
-    try {
-      sessionStorage.setItem(newlyCreatedTaskStorageKey, String(result.task.id));
-    } catch (_) { /* Storage can be unavailable in privacy modes. */ }
-    reloadAndRestoreTaskView(newTaskReturnView);
-  } catch (error) {
-    newTaskForm.removeAttribute("aria-busy");
-    updateNewTaskSubmit();
-    notify(error.message, true);
-  }
 });
 
 document.querySelectorAll(".task-attachment-dropzone").forEach((zone) => {
-  bindDropzone(zone, (files) => uploadTaskAttachments(zone, files));
+  bindDropzone(zone, (files) => submitTaskAttachments(zone, files));
   taskRow(zone).querySelector(".task-details").addEventListener("paste", (event) => {
     if (zone.contains(event.target)) return;
     const files = clipboardFiles(event);
     if (files.length) {
       event.preventDefault();
-      uploadTaskAttachments(zone, files);
+      submitTaskAttachments(zone, files);
     }
-  });
-});
-
-document.querySelectorAll(".create-blocker-form").forEach((form) => {
-  form.addEventListener("submit", (event) => {
-    event.preventDefault();
-    const row = taskRow(form);
-    submitAndReload(form, "/api/tasks", {
-      title: form.elements.title.value,
-      blocks_task_id: Number(row.dataset.taskId),
-    });
-  });
-});
-
-document.querySelectorAll(".add-label-form").forEach((form) => {
-  form.addEventListener("submit", (event) => {
-    event.preventDefault();
-    const row = taskRow(form);
-    submitAndReload(form, `/api/tasks/${row.dataset.taskId}/labels`, { name: form.elements.name.value });
   });
 });
 
@@ -630,56 +549,6 @@ document.querySelectorAll(".task-label-picker").forEach((picker) => {
   });
 });
 
-document.querySelectorAll(".add-blocker-form").forEach((form) => {
-  form.addEventListener("submit", (event) => {
-    event.preventDefault();
-    const row = taskRow(form);
-    submitAndReload(form, `/api/tasks/${row.dataset.taskId}/dependencies`, { blocker_task_id: form.elements.blocker_task_id.value });
-  });
-});
-
-document.querySelectorAll(".add-blocked-task-form").forEach((form) => {
-  form.addEventListener("submit", (event) => {
-    event.preventDefault();
-    const row = taskRow(form);
-    submitAndReload(form, `/api/tasks/${form.elements.blocked_task_id.value}/dependencies`, { blocker_task_id: Number(row.dataset.taskId) });
-  });
-});
-
-document.querySelectorAll(".comment-form").forEach((form) => {
-  form.addEventListener("submit", (event) => {
-    event.preventDefault();
-    const row = taskRow(form);
-    submitAndReload(form, `/api/tasks/${row.dataset.taskId}/comments`, {
-      body: form.elements.body.value,
-      counts_as_progress: form.elements.counts_as_progress.checked,
-    });
-  });
-});
-
-document.querySelectorAll(".waiting-form").forEach((form) => {
-  form.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const row = taskRow(form);
-    const button = form.querySelector("button[type='submit']");
-    button.disabled = true;
-    try {
-      await api(`/api/tasks/${row.dataset.taskId}/waiting`, {
-        method: "PUT",
-        body: JSON.stringify({
-          person_name: form.elements.person_name.value,
-          note: form.elements.note.value,
-          next_follow_up_on: form.elements.next_follow_up_on.value || null,
-          next_follow_up_time: form.elements.next_follow_up_time.value || null,
-        }),
-      });
-      reloadAndRestoreTaskView();
-    } catch (error) {
-      button.disabled = false;
-      notify(error.message, true);
-    }
-  });
-});
 
 const followUpDialog = document.querySelector("#follow-up-dialog");
 const followUpForm = document.querySelector("#follow-up-form");
@@ -720,6 +589,8 @@ document.querySelectorAll(".followed-up").forEach((button) => {
     const row = taskRow(button);
     followUpForm.reset();
     followUpForm.elements.task_id.value = row.dataset.taskId;
+    followUpForm.action = `/tasks/${row.dataset.taskId}/follow-ups`;
+    followUpForm.elements.return_view.value = currentTaskView();
     followUpForm.elements.next_follow_up_time.value = row.dataset.followUpExactTime;
     setExactTimeVisibility(followUpForm, Boolean(row.dataset.followUpExactTime));
     followUpPerson.textContent = `Waiting on ${button.dataset.personName || row.dataset.waitingOn}`;
@@ -733,41 +604,9 @@ followUpDialog.querySelector(".cancel-follow-up").addEventListener("click", () =
 followUpDialog.addEventListener("click", (event) => {
   if (event.target === followUpDialog) followUpDialog.close();
 });
-followUpForm.addEventListener("submit", async (event) => {
-  event.preventDefault();
+followUpForm.addEventListener("submit", () => {
   const button = followUpForm.querySelector("button[type='submit']");
   button.disabled = true;
-  try {
-    await api(`/api/tasks/${followUpForm.elements.task_id.value}/follow-ups`, {
-      method: "POST",
-      body: JSON.stringify({
-        note: followUpForm.elements.note.value,
-        next_follow_up_on: followUpForm.elements.next_follow_up_on.value || null,
-        next_follow_up_time: followUpForm.elements.next_follow_up_time.value || null,
-      }),
-    });
-    reloadAndRestoreTaskView();
-  } catch (error) {
-    button.disabled = false;
-    notify(error.message, true);
-  }
-});
-
-document.querySelectorAll(".resolve-waiting").forEach((button) => {
-  button.addEventListener("click", async () => {
-    const row = taskRow(button);
-    button.disabled = true;
-    try {
-      await api(`/api/tasks/${row.dataset.taskId}/waiting/resolve`, {
-        method: "POST",
-        body: "{}",
-      });
-      reloadAndRestoreTaskView();
-    } catch (error) {
-      button.disabled = false;
-      notify(error.message, true);
-    }
-  });
 });
 
 const searchFilter = document.querySelector("#search-filter");
@@ -1045,83 +884,6 @@ aurBataaoButton.addEventListener("click", () => {
   if (currentRow) showAnotherTask(currentRow);
 });
 
-document.querySelectorAll(".complete-focus-task").forEach((button) => {
-  button.addEventListener("click", async () => {
-    const row = taskRow(button);
-    const statusControl = row.querySelector('[data-field="status"]');
-    const previousStatus = row.dataset.status;
-    const previousControlValue = statusControl.value;
-    const candidates = actionableTaskRows();
-    const currentIndex = candidates.indexOf(row);
-    const next = candidates.length > 1
-      ? candidates[(currentIndex + 1) % candidates.length]
-      : null;
-    const dependentSnapshots = taskRows()
-      .filter((candidate) => candidate.dataset.unresolvedBlockerIds.split(" ").includes(row.dataset.taskId))
-      .map((candidate) => ({
-        row: candidate,
-        blockerIds: candidate.dataset.unresolvedBlockerIds,
-        actionable: candidate.dataset.actionable,
-        blocked: candidate.dataset.blocked,
-      }));
-
-    row.dataset.status = "done";
-    row.dataset.actionable = "false";
-    row.dataset.blocked = "false";
-    row.classList.remove(`status-${previousStatus}`);
-    row.classList.remove("is-blocked");
-    row.classList.add("status-done");
-    statusControl.value = "done";
-    statusControl.dataset.previous = "done";
-    dependentSnapshots.forEach((snapshot) => {
-      const remainingBlockerIds = snapshot.blockerIds
-        .split(" ")
-        .filter((blockerId) => blockerId && blockerId !== row.dataset.taskId);
-      snapshot.row.dataset.unresolvedBlockerIds = remainingBlockerIds.join(" ");
-      snapshot.row.dataset.blocked = String(
-        remainingBlockerIds.length > 0 || Boolean(snapshot.row.dataset.waitingOn),
-      );
-      snapshot.row.dataset.actionable = String(
-        snapshot.row.dataset.followUpDue === "true"
-        || (
-          ["todo", "in_progress"].includes(snapshot.row.dataset.status)
-          && remainingBlockerIds.length === 0
-          && !snapshot.row.dataset.waitingOn
-        ),
-      );
-      snapshot.row.classList.toggle("is-blocked", snapshot.row.dataset.blocked === "true");
-    });
-    updateActiveTaskCount();
-    applyFilters();
-    renderFocusView(next?.dataset.taskId || "");
-
-    try {
-      const result = await api(`/api/tasks/${row.dataset.taskId}`, {
-        method: "PATCH",
-        body: JSON.stringify({ status: "done" }),
-      });
-      applyTask(row, result.task);
-    } catch (error) {
-      row.dataset.status = previousStatus;
-      row.dataset.actionable = "true";
-      row.classList.remove("status-done");
-      row.classList.add(`status-${previousStatus}`);
-      statusControl.value = previousControlValue;
-      statusControl.dataset.previous = previousControlValue;
-      dependentSnapshots.forEach((snapshot) => {
-        snapshot.row.dataset.unresolvedBlockerIds = snapshot.blockerIds;
-        snapshot.row.dataset.actionable = snapshot.actionable;
-        snapshot.row.dataset.blocked = snapshot.blocked;
-        snapshot.row.classList.toggle("is-blocked", snapshot.blocked === "true");
-      });
-      updateActiveTaskCount();
-      applyFilters();
-      renderFocusView(row.dataset.taskId);
-      notify(error.message, true);
-    }
-  });
-});
-
 function updateRankPresentation() {
   const rankMode = sortControl.value === "rank";
   const visibleRows = taskRows().filter((row) => !row.hidden);
@@ -1170,45 +932,6 @@ function setSortMode(value, persist = true) {
   taskList.dataset.sort = sortControl.value;
   if (persist) saveSortPreference(sortControl.value);
   sortTasks();
-}
-
-function emphasizeNewlyCreatedTask() {
-  let taskId = "";
-  try {
-    taskId = sessionStorage.getItem(newlyCreatedTaskStorageKey) || "";
-    sessionStorage.removeItem(newlyCreatedTaskStorageKey);
-  } catch (_) { /* Storage can be unavailable in privacy modes. */ }
-  if (!taskId) return;
-
-  const row = taskRows().find((candidate) => candidate.dataset.taskId === taskId);
-  if (!row) return;
-  if (row.hidden) {
-    notify("Task added — hidden by current filters");
-    return;
-  }
-
-  const bounds = row.getBoundingClientRect();
-  const isOutsideViewport = bounds.top < 0 || bounds.bottom > window.innerHeight;
-  const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-  if (isOutsideViewport) {
-    row.scrollIntoView({
-      behavior: reduceMotion ? "auto" : "smooth",
-      block: "nearest",
-    });
-  }
-
-  row.classList.add("is-newly-created");
-  setTimeout(() => row.classList.remove("is-newly-created"), 3600);
-  notify("Task added");
-}
-
-function restoreTaskViewAfterReload() {
-  let view = "";
-  try {
-    view = sessionStorage.getItem(taskReturnViewStorageKey) || "";
-    sessionStorage.removeItem(taskReturnViewStorageKey);
-  } catch (_) { /* Storage can be unavailable in privacy modes. */ }
-  if (view) showTaskView(view);
 }
 
 function setReorderInFlight(value) {
@@ -1341,8 +1064,12 @@ sortControl.addEventListener("change", () => setSortMode(sortControl.value));
 applyFilters();
 setSortMode(savedSortPreference(), false);
 renderFocusView();
-restoreTaskViewAfterReload();
-emphasizeNewlyCreatedTask();
+showTaskView(document.body.dataset.initialView || "focus");
+if (document.body.dataset.error) {
+  notify(document.body.dataset.error, true);
+} else if (document.body.dataset.notice) {
+  notify(document.body.dataset.notice);
+}
 
 // Reconcile at midnight and surface timed follow-ups within a minute.
 function dateTimeInConfiguredTimezone() {
@@ -1376,7 +1103,7 @@ setInterval(async () => {
   ) {
     try {
       await api("/api/reconcile", { method: "POST", body: "{}" });
-      reloadAndRestoreTaskView();
+      location.assign(`/?view=${encodeURIComponent(currentTaskView())}`);
     } catch (error) {
       notify(error.message, true);
     }

@@ -10,7 +10,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     due_date TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
-    last_progress_at TEXT
+    last_progress_at TEXT,
+    create_request_id TEXT
 );
 
 CREATE TABLE IF NOT EXISTS task_dependencies (

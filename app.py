@@ -12,13 +12,41 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from flask import Flask, current_app, g, jsonify, render_template, request, send_file
+from flask import (
+    Flask,
+    current_app,
+    g,
+    jsonify,
+    make_response,
+    redirect,
+    render_template,
+    request,
+    send_file,
+    url_for,
+)
 
 
 STATUS_LABELS = {
     "todo": "To do",
     "in_progress": "In progress",
     "done": "Done",
+}
+TASK_VIEWS = {"focus", "manage", "blocked"}
+FORM_META_FIELDS = {"return_view", "expand", "task_id"}
+NOTICE_MESSAGES = {
+    "task-created": "Task added",
+    "task-updated": "Task updated",
+    "task-completed": "Task completed",
+    "attachments-added": "Attachments added",
+    "attachment-removed": "Attachment removed",
+    "comment-added": "Comment added",
+    "waiting-saved": "Waiting details saved",
+    "follow-up-recorded": "Follow-up recorded",
+    "waiting-resolved": "Waiting resolved",
+    "label-added": "Label added",
+    "label-removed": "Label removed",
+    "dependency-added": "Dependency added",
+    "dependency-removed": "Dependency removed",
 }
 STATUSES = set(STATUS_LABELS)
 MAX_RECONCILE_AGE_SECONDS = 60
@@ -97,7 +125,19 @@ def init_db() -> None:
     migrate_task_ranks(db)
     migrate_waiting_times(db)
     migrate_legacy_subtasks(db)
+    migrate_create_request_ids(db)
     db.commit()
+
+
+def migrate_create_request_ids(db: sqlite3.Connection) -> None:
+    """Add retry-safe task creation IDs to existing databases."""
+    columns = {row["name"] for row in db.execute("PRAGMA table_info(tasks)").fetchall()}
+    if "create_request_id" not in columns:
+        db.execute("ALTER TABLE tasks ADD COLUMN create_request_id TEXT")
+    db.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_tasks_create_request_id "
+        "ON tasks(create_request_id) WHERE create_request_id IS NOT NULL"
+    )
 
 
 def _smart_ordered_task_ids(db: sqlite3.Connection) -> list[int]:
@@ -457,6 +497,7 @@ def _save_attachments(
 
 def _serialize_task(db: sqlite3.Connection, row: sqlite3.Row) -> dict[str, Any]:
     item = dict(row)
+    item.pop("create_request_id", None)
     item["labels"] = [
         dict(label)
         for label in db.execute(
@@ -641,6 +682,67 @@ def _json_body() -> dict[str, Any]:
     return body
 
 
+def _is_form_request() -> bool:
+    return not request.path.startswith("/api/")
+
+
+def _command_body() -> dict[str, Any]:
+    if _is_form_request():
+        return {
+            key: value
+            for key, value in request.form.items()
+            if key not in FORM_META_FIELDS
+        }
+    return _json_body()
+
+
+def _requested_view(default: str = "manage") -> str:
+    view = request.form.get("return_view", default)
+    return view if view in TASK_VIEWS else default
+
+
+def _task_redirect(
+    task_id: int,
+    notice: str,
+    *,
+    view: str | None = None,
+    expanded: bool | None = None,
+    created: bool = False,
+):
+    destination_view = view or _requested_view()
+    if destination_view not in TASK_VIEWS:
+        destination_view = "manage"
+    if expanded is None:
+        expanded = request.form.get("expand") in {"1", "true"}
+    values: dict[str, Any] = {"view": destination_view, "notice": notice}
+    if expanded:
+        values["expanded"] = task_id
+    if created:
+        values["created"] = task_id
+    return redirect(f"{url_for('index', **values)}#task-{task_id}", code=303)
+
+
+def _create_request_id(value: Any) -> str | None:
+    if value in (None, ""):
+        return None
+    try:
+        parsed = uuid.UUID(str(value))
+    except (ValueError, AttributeError) as exc:
+        raise ValueError("Invalid task submission; reopen the form and try again") from exc
+    return parsed.hex
+
+
+def _query_task_id(name: str) -> int | None:
+    value = request.args.get(name)
+    if not value:
+        return None
+    try:
+        parsed = int(value)
+    except ValueError:
+        return None
+    return parsed if parsed > 0 else None
+
+
 def _valid_due_date(value: Any) -> str | None:
     if value in (None, ""):
         return None
@@ -714,6 +816,37 @@ def _would_create_dependency_cycle(db: sqlite3.Connection, blocked_id: int, bloc
         (blocker_id, blocked_id),
     ).fetchone()
     return row is not None
+
+
+def _add_dependency_record(
+    db: sqlite3.Connection,
+    blocked_id: int,
+    blocker_id: int,
+) -> None:
+    if blocker_id == blocked_id:
+        raise ValueError("A task cannot block itself")
+    blocked_task = _task_or_404(db, blocked_id)
+    blocker = _task_or_404(db, blocker_id)
+    if blocked_task["status"] == "done":
+        raise ValueError("Reopen the completed task before adding a blocker")
+    if blocker["status"] == "done":
+        raise ValueError("A completed task cannot be an active blocker")
+    if _would_create_dependency_cycle(db, blocked_id, blocker_id):
+        raise ValueError("That dependency would create a cycle")
+    now = utc_now()
+    cursor = db.execute(
+        "INSERT OR IGNORE INTO task_dependencies(blocked_task_id, blocker_task_id) "
+        "VALUES (?, ?)",
+        (blocked_id, blocker_id),
+    )
+    if cursor.rowcount:
+        _record_event(
+            db,
+            blocked_id,
+            "dependency_added",
+            details={"blocker_task_id": blocker_id},
+            now=now,
+        )
 
 
 def _change_task_status(
@@ -791,6 +924,15 @@ def _resolve_active_waiting(
 def register_routes(app: Flask) -> None:
     @app.errorhandler(ValueError)
     def invalid_input(exc: ValueError):
+        if _is_form_request():
+            return redirect(
+                url_for(
+                    "index",
+                    view=_requested_view(),
+                    error=str(exc),
+                ),
+                code=303,
+            )
         return jsonify(error=str(exc)), 400
 
     @app.errorhandler(404)
@@ -801,12 +943,28 @@ def register_routes(app: Flask) -> None:
 
     @app.errorhandler(413)
     def request_too_large(_exc):
+        if _is_form_request():
+            return redirect(
+                url_for(
+                    "index",
+                    view="manage",
+                    error="Upload is too large; attach fewer or smaller files",
+                ),
+                code=303,
+            )
         return jsonify(error="Upload is too large; attach fewer or smaller files"), 413
 
     @app.get("/")
     def index():
         maybe_reconcile()
         tasks, choices = load_tasks()
+        initial_view = request.args.get("view", "focus")
+        if initial_view not in TASK_VIEWS:
+            initial_view = "focus"
+        expanded_task_id = _query_task_id("expanded")
+        created_task_id = _query_task_id("created")
+        notice_message = NOTICE_MESSAGES.get(request.args.get("notice", ""), "")
+        error_message = request.args.get("error", "")[:500]
         focus_task = next(
             (
                 task
@@ -850,29 +1008,43 @@ def register_routes(app: Flask) -> None:
                 "WHERE type = 'manual' ORDER BY name COLLATE NOCASE"
             ).fetchall()
         ]
-        return render_template(
-            "index.html",
-            tasks=tasks,
-            focus_task_id=focus_task["id"] if focus_task else None,
-            empty_state_emoji=empty_state_emoji,
-            empty_state_emoji_label=empty_state_emoji_label,
-            task_choices=choices,
-            label_choices=label_choices,
-            manual_label_choices=manual_label_choices,
-            status_labels=STATUS_LABELS,
-            timezone_name=current_app.config["USER_TIMEZONE"],
-            today=local_today().isoformat(),
-            default_follow_up_on=(local_today() + timedelta(days=3)).isoformat(),
-            default_follow_up_time=DEFAULT_FOLLOW_UP_TIME,
-            max_attachment_bytes=current_app.config["MAX_ATTACHMENT_BYTES"],
-            max_attachments_per_task=current_app.config["MAX_ATTACHMENTS_PER_TASK"],
-            max_upload_bytes=current_app.config["MAX_CONTENT_LENGTH"],
+        response = make_response(
+            render_template(
+                "index.html",
+                tasks=tasks,
+                focus_task_id=focus_task["id"] if focus_task else None,
+                empty_state_emoji=empty_state_emoji,
+                empty_state_emoji_label=empty_state_emoji_label,
+                task_choices=choices,
+                label_choices=label_choices,
+                manual_label_choices=manual_label_choices,
+                status_labels=STATUS_LABELS,
+                initial_view=initial_view,
+                expanded_task_id=expanded_task_id,
+                created_task_id=created_task_id,
+                notice_message=notice_message,
+                error_message=error_message,
+                new_task_request_id=uuid.uuid4().hex,
+                create_blocker_request_ids={
+                    task["id"]: uuid.uuid4().hex for task in tasks
+                },
+                timezone_name=current_app.config["USER_TIMEZONE"],
+                today=local_today().isoformat(),
+                default_follow_up_on=(local_today() + timedelta(days=3)).isoformat(),
+                default_follow_up_time=DEFAULT_FOLLOW_UP_TIME,
+                max_attachment_bytes=current_app.config["MAX_ATTACHMENT_BYTES"],
+                max_attachments_per_task=current_app.config["MAX_ATTACHMENTS_PER_TASK"],
+                max_upload_bytes=current_app.config["MAX_CONTENT_LENGTH"],
+            )
         )
+        response.headers["Cache-Control"] = "no-store"
+        return response
 
+    @app.post("/tasks", endpoint="create_task_form")
     @app.post("/api/tasks")
     def create_task():
         is_multipart = request.mimetype == "multipart/form-data"
-        body = request.form if is_multipart else _json_body()
+        body = request.form if is_multipart or _is_form_request() else _json_body()
         uploads = request.files.getlist("attachments") if is_multipart else []
         title = str(body.get("title", "")).strip()
         if not title or len(title) > 200:
@@ -880,11 +1052,14 @@ def register_routes(app: Flask) -> None:
         if "parent_task_id" in body:
             raise ValueError("Subtasks are no longer supported; create a blocking task instead")
         blocks_task_id = body.get("blocks_task_id")
-        if blocks_task_id is not None:
+        if blocks_task_id in (None, ""):
+            blocks_task_id = None
+        else:
             try:
                 blocks_task_id = int(blocks_task_id)
             except (TypeError, ValueError) as exc:
                 raise ValueError("Invalid blocked task") from exc
+        create_request_id = _create_request_id(body.get("request_id"))
         db = get_db()
         if blocks_task_id is not None:
             blocked_task = _task_or_404(db, blocks_task_id)
@@ -894,13 +1069,37 @@ def register_routes(app: Flask) -> None:
         stored_paths: list[Path] = []
         try:
             db.execute("BEGIN IMMEDIATE")
+            existing = None
+            if create_request_id is not None:
+                existing = db.execute(
+                    "SELECT id FROM tasks WHERE create_request_id = ?",
+                    (create_request_id,),
+                ).fetchone()
+            if existing is not None:
+                task_id = existing["id"]
+                db.commit()
+                if _is_form_request():
+                    return _task_redirect(
+                        task_id,
+                        "task-created",
+                        view="manage",
+                        created=True,
+                    )
+                return jsonify(task=_serialize_task(db, _task_or_404(db, task_id))), 200
             rank_key = _new_task_rank_key(db)
             cursor = db.execute(
                 """
-                INSERT INTO tasks(rank_key, title, created_at, updated_at)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO tasks(
+                    rank_key, title, created_at, updated_at, create_request_id
+                ) VALUES (?, ?, ?, ?, ?)
                 """,
-                (rank_key, title, iso_utc(now), iso_utc(now)),
+                (
+                    rank_key,
+                    title,
+                    iso_utc(now),
+                    iso_utc(now),
+                    create_request_id,
+                ),
             )
             task_id = cursor.lastrowid
             _record_event(db, task_id, "task_created", details={"status": "todo"}, now=now)
@@ -926,8 +1125,19 @@ def register_routes(app: Flask) -> None:
             for stored_path in stored_paths:
                 stored_path.unlink(missing_ok=True)
             raise
+        if _is_form_request():
+            return _task_redirect(
+                task_id,
+                "task-created",
+                view="manage",
+                created=True,
+            )
         return jsonify(task=_serialize_task(db, _task_or_404(db, task_id))), 201
 
+    @app.post(
+        "/tasks/<int:task_id>/attachments",
+        endpoint="add_attachments_form",
+    )
     @app.post("/api/tasks/<int:task_id>/attachments")
     def add_attachments(task_id: int):
         db = get_db()
@@ -952,6 +1162,8 @@ def register_routes(app: Flask) -> None:
                 stored_path.unlink(missing_ok=True)
             raise
         task = _serialize_task(db, _task_or_404(db, task_id))
+        if _is_form_request():
+            return _task_redirect(task_id, "attachments-added", expanded=True)
         return jsonify(attachments=task["attachments"]), 201
 
     @app.get("/api/attachments/<int:attachment_id>")
@@ -980,6 +1192,10 @@ def register_routes(app: Flask) -> None:
         response.headers["X-Content-Type-Options"] = "nosniff"
         return response
 
+    @app.post(
+        "/tasks/<int:task_id>/attachments/<int:attachment_id>/remove",
+        endpoint="remove_attachment_form",
+    )
     @app.delete("/api/tasks/<int:task_id>/attachments/<int:attachment_id>")
     def remove_attachment(task_id: int, attachment_id: int):
         db = get_db()
@@ -989,6 +1205,8 @@ def register_routes(app: Flask) -> None:
             (attachment_id, task_id),
         ).fetchone()
         if attachment is None:
+            if _is_form_request():
+                raise ValueError("Attachment not found")
             return jsonify(error="Attachment not found"), 404
         try:
             _attachment_path(attachment["stored_name"]).unlink(missing_ok=True)
@@ -1002,11 +1220,14 @@ def register_routes(app: Flask) -> None:
             details={"attachment_id": attachment_id},
         )
         db.commit()
+        if _is_form_request():
+            return _task_redirect(task_id, "attachment-removed", expanded=True)
         return "", 204
 
+    @app.post("/tasks/<int:task_id>", endpoint="update_task_form")
     @app.patch("/api/tasks/<int:task_id>")
     def update_task(task_id: int):
-        body = _json_body()
+        body = _command_body()
         allowed = {"title", "description", "status", "due_date"}
         unknown = set(body) - allowed
         if unknown:
@@ -1056,6 +1277,9 @@ def register_routes(app: Flask) -> None:
                     now=now,
                 )
             db.commit()
+        if _is_form_request():
+            notice = "task-completed" if changes.get("status") == "done" else "task-updated"
+            return _task_redirect(task_id, notice)
         return jsonify(task=_serialize_task(db, _task_or_404(db, task_id)))
 
     @app.patch("/api/tasks/<int:task_id>/rank")
@@ -1154,9 +1378,13 @@ def register_routes(app: Flask) -> None:
         ]
         return jsonify(ranks=ranks, rebalanced=rebalanced)
 
+    @app.post(
+        "/tasks/<int:task_id>/comments",
+        endpoint="add_comment_form",
+    )
     @app.post("/api/tasks/<int:task_id>/comments")
     def add_comment(task_id: int):
-        body = _json_body()
+        body = _command_body()
         comment = str(body.get("body", "")).strip()
         if not comment or len(comment) > 2000:
             raise ValueError("Comment must be between 1 and 2000 characters")
@@ -1177,11 +1405,17 @@ def register_routes(app: Flask) -> None:
             now=now,
         )
         db.commit()
+        if _is_form_request():
+            return _task_redirect(task_id, "comment-added", expanded=True)
         return jsonify(comment_id=cursor.lastrowid), 201
 
+    @app.post(
+        "/tasks/<int:task_id>/waiting",
+        endpoint="set_waiting_form",
+    )
     @app.put("/api/tasks/<int:task_id>/waiting")
     def set_waiting(task_id: int):
-        body = _json_body()
+        body = _command_body()
         unknown = set(body) - {
             "person_name",
             "note",
@@ -1296,12 +1530,18 @@ def register_routes(app: Flask) -> None:
             db.rollback()
             raise
 
+        if _is_form_request():
+            return _task_redirect(task_id, "waiting-saved", expanded=True)
         response = jsonify(task=_serialize_task(db, _task_or_404(db, task_id)))
         return (response, 201) if created else response
 
+    @app.post(
+        "/tasks/<int:task_id>/follow-ups",
+        endpoint="record_follow_up_form",
+    )
     @app.post("/api/tasks/<int:task_id>/follow-ups")
     def record_follow_up(task_id: int):
-        body = _json_body()
+        body = _command_body()
         unknown = set(body) - {
             "note", "next_follow_up_on", "next_follow_up_time"
         }
@@ -1358,11 +1598,17 @@ def register_routes(app: Flask) -> None:
             now=now,
         )
         db.commit()
+        if _is_form_request():
+            return _task_redirect(task_id, "follow-up-recorded", expanded=True)
         return jsonify(task=_serialize_task(db, _task_or_404(db, task_id))), 201
 
+    @app.post(
+        "/tasks/<int:task_id>/waiting/resolve",
+        endpoint="resolve_waiting_form",
+    )
     @app.post("/api/tasks/<int:task_id>/waiting/resolve")
     def resolve_waiting(task_id: int):
-        body = _json_body()
+        body = _command_body()
         unknown = set(body)
         if unknown:
             raise ValueError(f"Unsupported field: {sorted(unknown)[0]}")
@@ -1373,11 +1619,17 @@ def register_routes(app: Flask) -> None:
         if _resolve_active_waiting(db, task_id, now, reason="resolved") is None:
             raise ValueError("This task is not waiting on anyone")
         db.commit()
+        if _is_form_request():
+            return _task_redirect(task_id, "waiting-resolved")
         return jsonify(task=_serialize_task(db, _task_or_404(db, task_id)))
 
+    @app.post(
+        "/tasks/<int:task_id>/labels",
+        endpoint="add_label_form",
+    )
     @app.post("/api/tasks/<int:task_id>/labels")
     def add_label(task_id: int):
-        body = _json_body()
+        body = _command_body()
         name = str(body.get("name", "")).strip().lower()
         if not name or len(name) > 32:
             raise ValueError("Label must be between 1 and 32 characters")
@@ -1399,8 +1651,14 @@ def register_routes(app: Flask) -> None:
         )
         _record_event(db, task_id, "label_added", details={"label_id": label["id"]}, now=now)
         db.commit()
+        if _is_form_request():
+            return _task_redirect(task_id, "label-added", expanded=True)
         return jsonify(task=_serialize_task(db, _task_or_404(db, task_id))), 201
 
+    @app.post(
+        "/tasks/<int:task_id>/labels/<int:label_id>/remove",
+        endpoint="remove_label_form",
+    )
     @app.delete("/api/tasks/<int:task_id>/labels/<int:label_id>")
     def remove_label(task_id: int, label_id: int):
         db = get_db()
@@ -1414,39 +1672,51 @@ def register_routes(app: Flask) -> None:
             (iso_utc(now), task_id, label_id),
         )
         if cursor.rowcount == 0:
+            if _is_form_request():
+                raise ValueError("Active label not found")
             return jsonify(error="Active label not found"), 404
         _record_event(db, task_id, "label_removed", details={"label_id": label_id}, now=now)
         db.commit()
+        if _is_form_request():
+            return _task_redirect(task_id, "label-removed", expanded=True)
         return "", 204
 
+    @app.post(
+        "/tasks/<int:task_id>/dependencies",
+        endpoint="add_dependency_form",
+    )
     @app.post("/api/tasks/<int:task_id>/dependencies")
     def add_dependency(task_id: int):
-        body = _json_body()
+        body = _command_body()
         try:
             blocker_id = int(body.get("blocker_task_id"))
         except (TypeError, ValueError) as exc:
             raise ValueError("Choose a blocker task") from exc
-        if blocker_id == task_id:
-            raise ValueError("A task cannot block itself")
         db = get_db()
-        blocked_task = _task_or_404(db, task_id)
-        blocker = _task_or_404(db, blocker_id)
-        if blocked_task["status"] == "done":
-            raise ValueError("Reopen the completed task before adding a blocker")
-        if blocker["status"] == "done":
-            raise ValueError("A completed task cannot be an active blocker")
-        if _would_create_dependency_cycle(db, task_id, blocker_id):
-            raise ValueError("That dependency would create a cycle")
-        now = utc_now()
-        cursor = db.execute(
-            "INSERT OR IGNORE INTO task_dependencies(blocked_task_id, blocker_task_id) VALUES (?, ?)",
-            (task_id, blocker_id),
-        )
-        if cursor.rowcount:
-            _record_event(db, task_id, "dependency_added", details={"blocker_task_id": blocker_id}, now=now)
+        _add_dependency_record(db, task_id, blocker_id)
         db.commit()
+        if _is_form_request():
+            return _task_redirect(task_id, "dependency-added", expanded=True)
         return jsonify(task=_serialize_task(db, _task_or_404(db, task_id))), 201
 
+    @app.post(
+        "/tasks/<int:blocker_id>/blocked-tasks",
+        endpoint="add_blocked_task_form",
+    )
+    def add_blocked_task(blocker_id: int):
+        try:
+            blocked_id = int(request.form.get("blocked_task_id"))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Choose a blocked task") from exc
+        db = get_db()
+        _add_dependency_record(db, blocked_id, blocker_id)
+        db.commit()
+        return _task_redirect(blocker_id, "dependency-added", expanded=True)
+
+    @app.post(
+        "/tasks/<int:task_id>/dependencies/<int:blocker_id>/remove",
+        endpoint="remove_dependency_form",
+    )
     @app.delete("/api/tasks/<int:task_id>/dependencies/<int:blocker_id>")
     def remove_dependency(task_id: int, blocker_id: int):
         db = get_db()
@@ -1457,6 +1727,8 @@ def register_routes(app: Flask) -> None:
             (task_id, blocker_id),
         )
         if cursor.rowcount == 0:
+            if _is_form_request():
+                raise ValueError("Dependency not found")
             return jsonify(error="Dependency not found"), 404
         _record_event(
             db,
@@ -1466,6 +1738,8 @@ def register_routes(app: Flask) -> None:
             details={"blocker_task_id": blocker_id},
         )
         db.commit()
+        if _is_form_request():
+            return _task_redirect(task_id, "dependency-removed", expanded=True)
         return "", 204
 
     @app.post("/api/reconcile")

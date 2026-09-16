@@ -75,6 +75,95 @@ def test_create_blocker_creates_task_and_relationship_atomically(client, app):
         )
 
 
+def test_browser_task_creation_redirects_to_visible_authoritative_row(client):
+    response = client.post(
+        "/tasks",
+        data={
+            "title": "Visible after redirect",
+            "request_id": "11111111-1111-4111-8111-111111111111",
+        },
+    )
+
+    assert response.status_code == 303
+    assert response.headers["Location"].endswith(
+        "/?view=manage&notice=task-created&created=1#task-1"
+    )
+
+    page = client.get(response.headers["Location"])
+    markup = page.get_data(as_text=True)
+    assert page.headers["Cache-Control"] == "no-store"
+    assert '<body class="manage-mode has-actionable"' in markup
+    assert 'id="task-1"' in markup
+    assert "Visible after redirect" in markup
+    assert "is-newly-created" in markup
+    assert 'data-notice="Task added"' in markup
+
+
+def test_browser_task_creation_retry_is_idempotent(client, app):
+    submission = {
+        "title": "Create exactly once",
+        "request_id": "22222222-2222-4222-8222-222222222222",
+    }
+
+    first = client.post("/tasks", data=submission)
+    retry = client.post("/tasks", data=submission)
+
+    assert first.status_code == retry.status_code == 303
+    assert first.headers["Location"] == retry.headers["Location"]
+    with app.app_context():
+        rows = get_db().execute(
+            "SELECT id, title, create_request_id FROM tasks"
+        ).fetchall()
+    assert [tuple(row) for row in rows] == [
+        (1, "Create exactly once", "22222222222242228222222222222222")
+    ]
+
+
+def test_browser_structural_commands_redirect_to_committed_state(client):
+    blocked = create_task(client, "Blocked task")
+    blocker = create_task(client, "Blocker")
+
+    dependency = client.post(
+        f"/tasks/{blocked['id']}/dependencies",
+        data={
+            "blocker_task_id": blocker["id"],
+            "return_view": "manage",
+            "expand": "true",
+        },
+    )
+    assert dependency.status_code == 303
+    assert f"expanded={blocked['id']}" in dependency.headers["Location"]
+    dependency_page = client.get(dependency.headers["Location"]).get_data(as_text=True)
+    blocked_markup = dependency_page.split(
+        f'id="task-{blocked["id"]}"', 1
+    )[1].split("</article>", 1)[0]
+    assert "Blocker" in blocked_markup
+    assert f'id="task-details-{blocked["id"]}" class="task-details">' in blocked_markup
+
+    comment = client.post(
+        f"/tasks/{blocked['id']}/comments",
+        data={"body": "Confirmed in the redirected page", "expand": "true"},
+    )
+    assert comment.status_code == 303
+    comment_page = client.get(comment.headers["Location"]).get_data(as_text=True)
+    assert "Confirmed in the redirected page" in comment_page
+
+
+def test_browser_form_validation_redirects_without_partial_task(client, app):
+    response = client.post(
+        "/tasks",
+        data={
+            "title": "   ",
+            "request_id": "33333333-3333-4333-8333-333333333333",
+        },
+    )
+
+    assert response.status_code == 303
+    assert "error=Title+must+be+between+1+and+200+characters" in response.headers["Location"]
+    with app.app_context():
+        assert get_db().execute("SELECT count(*) FROM tasks").fetchone()[0] == 0
+
+
 def test_legacy_subtasks_migrate_to_dependencies(client, app):
     parent = create_task(client, "Former parent")
     child = create_task(client, "Former child")
@@ -175,6 +264,7 @@ def test_existing_database_gets_rank_column_and_preserves_smart_order(tmp_path):
         }
 
     assert "rank_key" in columns
+    assert "create_request_id" in columns
     assert waiting_table is not None
     assert "next_follow_up_time" in waiting_columns
     assert ranked_titles == ["In progress", "Newer todo", "Older todo"]

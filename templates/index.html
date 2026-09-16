@@ -21,7 +21,10 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
   <script type="module" src="{{ url_for('static', filename='app.js') }}"></script>
 </head>
-<body class="focus-mode{% if focus_task_id %} has-actionable{% else %} focus-empty{% endif %}"
+<body class="{{ 'manage-mode' if initial_view in ['manage', 'blocked'] else 'focus-mode' }}{% if focus_task_id %} has-actionable{% else %} focus-empty{% endif %}"
+  data-initial-view="{{ initial_view }}"
+  data-notice="{{ notice_message }}"
+  data-error="{{ error_message }}"
   data-timezone="{{ timezone_name }}"
   data-today="{{ today }}"
   data-max-attachment-bytes="{{ max_attachment_bytes }}"
@@ -50,7 +53,7 @@
         </button>
         <button id="view-toggle" type="button" class="quiet-button">
           <span class="view-toggle-prompt" aria-hidden="true">Switch Mode to</span>
-          <span class="view-toggle-label">View all tasks</span>
+          <span class="view-toggle-label">{{ 'Aur Bataao' if initial_view in ['manage', 'blocked'] else 'View all tasks' }}</span>
         </button>
         <button id="open-task-dialog" type="button" class="primary new-task-button open-task-dialog">Add a Task...</button>
       </div>
@@ -120,7 +123,8 @@
       {% set unresolved = task.blocked_by|rejectattr('resolved')|list %}
       {% set actionable = task.follow_up_due or (task.status in ['todo', 'in_progress'] and not task.blocked) %}
       <article
-        class="task-card task-row status-{{ task.status }}{% if task.blocked %} is-blocked{% endif %}{% if task.id == focus_task_id %} is-focus-task{% endif %}"
+        id="task-{{ task.id }}"
+        class="task-card task-row status-{{ task.status }}{% if task.blocked %} is-blocked{% endif %}{% if task.id == focus_task_id %} is-focus-task{% endif %}{% if task.id == created_task_id %} is-newly-created{% endif %}"
         data-task-id="{{ task.id }}"
         data-rank-key="{{ task.rank_key }}"
         data-status="{{ task.status }}"
@@ -149,10 +153,13 @@
               title="Drag to change rank; use arrow keys for keyboard control"
             >⠿</button>
             <span class="badge rank-badge" aria-hidden="true" hidden></span>
-            <button class="icon toggle-details" type="button" aria-expanded="false" aria-controls="task-details-{{ task.id }}" aria-label="Show task details"><span class="toggle-chevron" aria-hidden="true">›</span></button>
+            <button class="icon toggle-details" type="button" aria-expanded="{{ 'true' if task.id == expanded_task_id else 'false' }}" aria-controls="task-details-{{ task.id }}" aria-label="{{ 'Hide' if task.id == expanded_task_id else 'Show' }} task details"><span class="toggle-chevron" aria-hidden="true">›</span></button>
           </div>
           <div class="task-summary">
-            <input class="task-title manage-task-title" data-field="title" value="{{ task.title }}" maxlength="200" aria-label="Task title">
+            <form class="inline-field-form task-title-form" method="post" action="{{ url_for('update_task_form', task_id=task.id) }}">
+              <input class="task-title manage-task-title" name="title" data-field="title" value="{{ task.title }}" maxlength="200" aria-label="Task title">
+              <input class="return-view-field" name="return_view" type="hidden" value="manage">
+            </form>
             {% if task.follow_up_due %}
             <div class="focus-task-title focus-only">Follow up with {{ task.waiting.person_name }}</div>
             <div class="focus-task-context focus-only">About: {{ task.title }}</div>
@@ -183,12 +190,18 @@
             {% if task.attachments %}<span class="badge attachment-badge">📎 {{ task.attachments|length }}</span>{% endif %}
           </div>
           <div class="task-controls">
-            <select class="status-select" data-field="status" aria-label="Status for {{ task.title }}">
+            <form class="inline-field-form" method="post" action="{{ url_for('update_task_form', task_id=task.id) }}">
+            <select class="status-select" name="status" data-field="status" aria-label="Status for {{ task.title }}">
               <option value="todo" {% if task.status == 'todo' %}selected{% endif %}>To do</option>
               <option value="in_progress" {% if task.status == 'in_progress' %}selected{% endif %}>In progress</option>
               <option value="done" {% if task.status == 'done' %}selected{% endif %}>Done</option>
             </select>
-            <input class="due-date" data-field="due_date" type="date" value="{{ task.due_date or '' }}" aria-label="Due date for {{ task.title }}">
+            <input class="return-view-field" name="return_view" type="hidden" value="manage">
+            </form>
+            <form class="inline-field-form" method="post" action="{{ url_for('update_task_form', task_id=task.id) }}">
+            <input class="due-date" data-field="due_date" type="date" name="due_date" value="{{ task.due_date or '' }}" aria-label="Due date for {{ task.title }}">
+            <input class="return-view-field" name="return_view" type="hidden" value="manage">
+            </form>
           </div>
         </header>
 
@@ -196,37 +209,56 @@
           <button
             type="button"
             class="focus-toggle-details"
-            aria-expanded="false"
+            aria-expanded="{{ 'true' if task.id == expanded_task_id else 'false' }}"
             aria-controls="task-details-{{ task.id }}"
-            aria-label="Expand task details and editing controls"
-            title="Expand task details and editing controls"
+            aria-label="{{ 'Collapse' if task.id == expanded_task_id else 'Expand' }} task details and editing controls"
+            title="{{ 'Collapse' if task.id == expanded_task_id else 'Expand' }} task details and editing controls"
           >
             <svg class="disclosure-chevron" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
               <path d="m5 7.5 5 5 5-5"></path>
             </svg>
           </button>
           {% if task.follow_up_due %}
-          <button type="button" class="resolve-waiting">No longer waiting</button>
+          <form method="post" action="{{ url_for('resolve_waiting_form', task_id=task.id) }}">
+            <input name="return_view" type="hidden" value="focus">
+            <button type="submit">No longer waiting</button>
+          </form>
           <button type="button" class="primary followed-up" data-person-name="{{ task.waiting.person_name }}">Followed up</button>
           {% else %}
-          <button type="button" class="primary complete-focus-task">Done</button>
+          <form method="post" action="{{ url_for('update_task_form', task_id=task.id) }}">
+            <input name="status" type="hidden" value="done">
+            <input name="return_view" type="hidden" value="focus">
+            <button type="submit" class="primary complete-focus-task">Done</button>
+          </form>
           {% endif %}
         </footer>
 
-        <div id="task-details-{{ task.id }}" class="task-details" hidden>
+        <div id="task-details-{{ task.id }}" class="task-details"{% if task.id != expanded_task_id %} hidden{% endif %}>
           <div class="detail-grid">
             <div class="task-detail-column">
               <label class="field-label first focus-only" for="focus-title-{{ task.id }}">Title</label>
-              <input id="focus-title-{{ task.id }}" class="focus-title-editor focus-only" data-field="title" value="{{ task.title }}" maxlength="200">
+              <form class="inline-field-form" method="post" action="{{ url_for('update_task_form', task_id=task.id) }}">
+                <input id="focus-title-{{ task.id }}" class="focus-title-editor focus-only" data-field="title" name="title" value="{{ task.title }}" maxlength="200">
+                <input class="return-view-field" name="return_view" type="hidden" value="focus">
+                <input name="expand" type="hidden" value="true">
+              </form>
               <label class="field-label" for="description-{{ task.id }}">Description</label>
-              <textarea id="description-{{ task.id }}" data-field="description" rows="3" maxlength="5000" placeholder="Optional details">{{ task.description }}</textarea>
+              <form class="inline-field-form" method="post" action="{{ url_for('update_task_form', task_id=task.id) }}">
+                <textarea id="description-{{ task.id }}" name="description" data-field="description" rows="3" maxlength="5000" placeholder="Optional details">{{ task.description }}</textarea>
+                <input class="return-view-field" name="return_view" type="hidden" value="manage">
+                <input name="expand" type="hidden" value="true">
+              </form>
 
               <div class="section-label">Labels</div>
               <div class="label-list">
                 {% for label in task.labels %}
                 <span class="label-chip {{ label.type }}" data-label-id="{{ label.id }}">
                   {{ label.name }}
-                  <button type="button" class="remove-label" title="Remove label" aria-label="Remove {{ label.name }}">×</button>
+                  <form class="inline-action-form" method="post" action="{{ url_for('remove_label_form', task_id=task.id, label_id=label.id) }}">
+                    <input name="return_view" type="hidden" value="manage">
+                    <input name="expand" type="hidden" value="true">
+                    <button type="submit" title="Remove label" aria-label="Remove {{ label.name }}">×</button>
+                  </form>
                 </span>
                 {% endfor %}
               </div>
@@ -259,7 +291,9 @@
                     </div>
                   </div>
                 </details>
-                <form class="inline-form add-label-form">
+                <form class="inline-form" method="post" action="{{ url_for('add_label_form', task_id=task.id) }}">
+                  <input name="return_view" type="hidden" value="manage">
+                  <input name="expand" type="hidden" value="true">
                   <input name="name" maxlength="32" placeholder="Create or add label…" aria-label="New label">
                   <button type="submit">Add label</button>
                 </form>
@@ -276,7 +310,13 @@
                   <strong>{% if task.waiting.next_follow_up_on %}{{ task.waiting.next_follow_up_on }}{% if task.waiting.next_follow_up_time %} {{ task.waiting.next_follow_up_time }}{% else %}, morning{% endif %}{% else %}No reminder{% endif %}</strong>
                 </span>
               </div>
-              <form class="waiting-form waiting-edit-form">
+              <form id="resolve-waiting-{{ task.id }}" method="post" action="{{ url_for('resolve_waiting_form', task_id=task.id) }}">
+                <input name="return_view" type="hidden" value="manage">
+                <input name="expand" type="hidden" value="true">
+              </form>
+              <form class="waiting-form waiting-edit-form" method="post" action="{{ url_for('set_waiting_form', task_id=task.id) }}">
+                <input class="return-view-field" name="return_view" type="hidden" value="manage">
+                <input name="expand" type="hidden" value="true">
                 <div class="waiting-fields">
                   <label>
                     <span>Person</span>
@@ -302,7 +342,7 @@
                 <div class="waiting-actions">
                   <button type="submit">Save</button>
                   <button type="button" class="followed-up" data-person-name="{{ task.waiting.person_name }}">Followed up</button>
-                  <button type="button" class="link-button resolve-waiting">No longer waiting</button>
+                  <button type="submit" class="link-button" form="resolve-waiting-{{ task.id }}" formnovalidate>No longer waiting</button>
                 </div>
               </form>
               {% if task.waiting.history %}
@@ -322,7 +362,9 @@
               <p class="waiting-hint muted">Reopen this task before waiting on someone.</p>
               {% else %}
               <p class="waiting-hint muted">Track who you’re waiting on and when to follow up.</p>
-              <form class="waiting-form">
+              <form class="waiting-form" method="post" action="{{ url_for('set_waiting_form', task_id=task.id) }}">
+                <input class="return-view-field" name="return_view" type="hidden" value="manage">
+                <input name="expand" type="hidden" value="true">
                 <div class="waiting-fields">
                   <label>
                     <span>Person</span>
@@ -358,17 +400,23 @@
                   {% for dep in task.blocked_by %}
                   <li class="{% if dep.resolved %}resolved{% endif %}">
                     <span>“{{ dep.title }}” <span class="relationship-status">{{ status_labels[dep.status] }}</span></span>
-                    <button
-                      type="button"
-                      class="link-button remove-relationship"
-                      data-blocked-task-id="{{ task.id }}"
-                      data-blocker-task-id="{{ dep.id }}"
-                      aria-label="Remove blocker {{ dep.title }}"
-                    >Remove</button>
+                    <form class="inline-action-form" method="post" action="{{ url_for('remove_dependency_form', task_id=task.id, blocker_id=dep.id) }}">
+                      <input name="return_view" type="hidden" value="manage">
+                      <input name="expand" type="hidden" value="true">
+                      <button
+                        type="submit"
+                        class="link-button remove-relationship"
+                        data-blocked-task-id="{{ task.id }}"
+                        data-blocker-task-id="{{ dep.id }}"
+                        aria-label="Remove blocker {{ dep.title }}"
+                      >Remove</button>
+                    </form>
                   </li>
                   {% else %}<li class="muted empty-note">No blockers</li>{% endfor %}
                 </ul>
-                <form class="inline-form add-blocker-form"{% if task.status == 'done' %} hidden{% endif %}>
+                <form class="inline-form add-blocker-form" method="post" action="{{ url_for('add_dependency_form', task_id=task.id) }}"{% if task.status == 'done' %} hidden{% endif %}>
+                  <input name="return_view" type="hidden" value="manage">
+                  <input name="expand" type="hidden" value="true">
                   <select name="blocker_task_id" aria-label="Add a task that blocks {{ task.title }}" required>
                     <option value="">Add blocker…</option>
                     {% for choice in task_choices %}
@@ -377,7 +425,9 @@
                   </select>
                   <button type="submit">Add</button>
                 </form>
-                <form class="inline-form create-blocker-form"{% if task.status == 'done' %} hidden{% endif %}>
+                <form class="inline-form create-blocker-form" method="post" action="{{ url_for('create_task_form') }}"{% if task.status == 'done' %} hidden{% endif %}>
+                  <input name="blocks_task_id" type="hidden" value="{{ task.id }}">
+                  <input name="request_id" type="hidden" value="{{ create_blocker_request_ids[task.id] }}">
                   <input name="title" maxlength="200" placeholder="Create new blocker…" aria-label="Title for a new task that blocks {{ task.title }}" required>
                   <button type="submit">Create</button>
                 </form>
@@ -389,17 +439,23 @@
                   {% for dep in task.blocks %}
                   <li>
                     <span>“{{ dep.title }}” <span class="relationship-status">{{ status_labels[dep.status] }}</span></span>
-                    <button
-                      type="button"
-                      class="link-button remove-relationship"
-                      data-blocked-task-id="{{ dep.id }}"
-                      data-blocker-task-id="{{ task.id }}"
-                      aria-label="Stop blocking {{ dep.title }}"
-                    >Remove</button>
+                    <form class="inline-action-form" method="post" action="{{ url_for('remove_dependency_form', task_id=dep.id, blocker_id=task.id) }}">
+                      <input name="return_view" type="hidden" value="manage">
+                      <input name="expand" type="hidden" value="true">
+                      <button
+                        type="submit"
+                        class="link-button remove-relationship"
+                        data-blocked-task-id="{{ dep.id }}"
+                        data-blocker-task-id="{{ task.id }}"
+                        aria-label="Stop blocking {{ dep.title }}"
+                      >Remove</button>
+                    </form>
                   </li>
                   {% else %}<li class="muted empty-note">Blocks no tasks</li>{% endfor %}
                 </ul>
-                <form class="inline-form add-blocked-task-form"{% if task.status == 'done' %} hidden{% endif %}>
+                <form class="inline-form add-blocked-task-form" method="post" action="{{ url_for('add_blocked_task_form', blocker_id=task.id) }}"{% if task.status == 'done' %} hidden{% endif %}>
+                  <input name="return_view" type="hidden" value="manage">
+                  <input name="expand" type="hidden" value="true">
                   <select name="blocked_task_id" aria-label="Add a task blocked by {{ task.title }}" required>
                     <option value="">Add blocked task…</option>
                     {% for choice in task_choices %}
@@ -428,20 +484,30 @@
                     <a href="{{ url_for('get_attachment', attachment_id=attachment.id, download=1) }}">{{ attachment.original_name }}</a>
                     <small>{{ attachment.size_label }}</small>
                   </span>
-                  <button type="button" class="link-button remove-attachment" aria-label="Remove {{ attachment.original_name }}">Remove</button>
+                  <form class="inline-action-form" method="post" action="{{ url_for('remove_attachment_form', task_id=task.id, attachment_id=attachment.id) }}">
+                    <input name="return_view" type="hidden" value="manage">
+                    <input name="expand" type="hidden" value="true">
+                    <button type="submit" class="link-button" aria-label="Remove {{ attachment.original_name }}">Remove</button>
+                  </form>
                 </li>
                 {% else %}
                 <li class="muted empty-attachments">No attachments yet</li>
                 {% endfor %}
               </ul>
+              <form class="task-attachment-form" method="post" action="{{ url_for('add_attachments_form', task_id=task.id) }}" enctype="multipart/form-data">
+              <input name="return_view" type="hidden" value="manage">
+              <input name="expand" type="hidden" value="true">
               <div class="attachment-dropzone task-attachment-dropzone" data-attachment-count="{{ task.attachments|length }}" tabindex="0" role="group" aria-label="Attach files to {{ task.title }} by choosing, dropping, or pasting">
-                <input class="attachment-input" type="file" multiple hidden>
+                <input class="attachment-input" name="attachments" type="file" multiple hidden>
                 <span><strong>Drop files</strong> or paste a screenshot</span>
                 <button type="button" class="choose-attachments">Choose files</button>
               </div>
+              </form>
 
               <div class="section-label">Comments</div>
-              <form class="comment-form">
+              <form class="comment-form" method="post" action="{{ url_for('add_comment_form', task_id=task.id) }}">
+                <input name="return_view" type="hidden" value="manage">
+                <input name="expand" type="hidden" value="true">
                 <textarea name="body" rows="2" maxlength="2000" placeholder="Add a comment…" required></textarea>
                 <div class="comment-actions">
                   <label class="check"><input name="counts_as_progress" type="checkbox"> Counts as progress</label>
@@ -491,7 +557,8 @@
       <button type="button" class="dialog-close" aria-label="Close new task dialog">×</button>
     </div>
 
-    <form id="new-task-form">
+    <form id="new-task-form" method="post" action="{{ url_for('create_task_form') }}" enctype="multipart/form-data">
+      <input name="request_id" type="hidden" value="{{ new_task_request_id }}">
       <label class="field-label first" for="new-task-input">What needs doing?</label>
       <div class="task-composer">
         <input id="new-task-input" name="title" maxlength="200" placeholder="Add a task…" autocomplete="off" required>
@@ -501,7 +568,7 @@
 
       <div class="section-label">Attachments <span class="optional">optional</span></div>
       <div id="new-task-dropzone" class="attachment-dropzone" tabindex="0" role="group" aria-label="Attach files by choosing, dropping, or pasting">
-        <input id="new-task-attachments" class="attachment-input" type="file" multiple hidden>
+        <input id="new-task-attachments" class="attachment-input" name="attachments" type="file" multiple hidden>
         <span><strong>Drop files here</strong> or paste screenshots from the clipboard (10 MB each)</span>
         <button type="button" class="choose-attachments">Choose files</button>
       </div>
@@ -521,8 +588,10 @@
       </div>
       <button type="button" class="dialog-close" aria-label="Close follow-up dialog">×</button>
     </div>
-    <form id="follow-up-form">
+    <form id="follow-up-form" method="post">
       <input name="task_id" type="hidden">
+      <input name="return_view" type="hidden" value="focus">
+      <input name="expand" type="hidden" value="true">
       <label class="field-label first" for="follow-up-note">Note <span class="optional">optional</span></label>
       <textarea id="follow-up-note" name="note" rows="3" maxlength="1000" placeholder="What did they say?"></textarea>
       <div class="dialog-follow-up-schedule follow-up-time-control">
