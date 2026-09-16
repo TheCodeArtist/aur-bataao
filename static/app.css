@@ -380,6 +380,7 @@ body:has(.new-task-dialog[open]) { overflow: hidden; }
 .task-details { padding: 16px; border-top: 1px solid var(--line-subtle); background: var(--panel-subtle); }
 .detail-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; }
 .task-detail-column { min-width: 0; }
+.task-detail-column textarea[data-field="description"] { field-sizing: content; min-height: 5rem; }
 .field-label, .section-label { display: block; margin: 9px 0 4px; color: var(--muted); font-size: 0.76rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; }
 .section-label.first { margin-top: 0; }
 .task-detail-column > .section-label { padding-top: 10px; margin-top: 12px; border-top: 1px solid var(--line-subtle); }
