@@ -90,6 +90,7 @@ body.focus-mode .task-main {
   grid-template-columns: minmax(0, 1fr) auto auto;
   align-items: center;
   gap: 16px;
+  height: auto;
   min-height: 0;
   padding: 16px 24px;
 }
