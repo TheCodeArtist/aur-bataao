@@ -332,7 +332,7 @@ body:has(.new-task-dialog[open]) { overflow: hidden; }
   mask-position: right center;
 }
 .task-card > * { position: relative; z-index: 1; }
-.task-card.is-newly-created:not(.is-dragging) { animation: newly-created-task 3600ms ease-out; }
+.task-card.is-newly-created:not(.is-dragging) { animation: newly-created-task 4200ms ease-out; }
 .task-card.is-dragging { opacity: 0.42; box-shadow: 0 5px 16px rgb(var(--shadow-color) / 28%); }
 .task-card.status-in_progress { --task-status-color: var(--accent-ink); }
 .task-card.is-blocked { --task-status-color: var(--blocked-status); }
@@ -375,6 +375,7 @@ body:has(.new-task-dialog[open]) { overflow: hidden; }
 .badge.warning { color: var(--warning); background: var(--warning-soft); }
 .badge.waiting-badge { color: var(--warning); background: var(--warning-soft); }
 .badge.attachment-badge { color: var(--text); background: var(--surface-muted); }
+.badge.newly-created-badge { color: var(--accent-ink); background: var(--accent-soft); }
 .badge.rank-badge { grid-area: rank; width: 34px; padding-inline: 4px; justify-content: center; color: var(--accent-ink); background: var(--accent-soft); font-variant-numeric: tabular-nums; }
 .badge.rank-badge[hidden] { display: none; }
 .task-details { padding: 16px; border-top: 1px solid var(--line-subtle); background: var(--panel-subtle); }
@@ -503,9 +504,9 @@ button.task-label-filter[aria-pressed="true"] { color: var(--accent-text); backg
 #toast.error { color: var(--panel); background: var(--toast-error); }
 
 @keyframes newly-created-task {
-  0% { background: var(--panel); box-shadow: 0 1px 1px rgb(var(--shadow-color) / 8%); }
-  12%, 32% { background: var(--accent-soft); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent), 0 2px 8px color-mix(in srgb, var(--accent) 14%, transparent); }
-  100% { background: var(--panel); box-shadow: 0 1px 1px rgb(var(--shadow-color) / 8%); }
+  0% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 38%, transparent), 0 4px 14px color-mix(in srgb, var(--accent) 22%, transparent); }
+  18%, 42% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 30%, transparent), 0 3px 12px color-mix(in srgb, var(--accent) 18%, transparent); }
+  100% { box-shadow: 0 1px 2px rgb(var(--shadow-color) / 6%); }
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -96,6 +96,7 @@ def test_browser_task_creation_redirects_to_visible_authoritative_row(client):
     assert 'id="task-1"' in markup
     assert "Visible after redirect" in markup
     assert "is-newly-created" in markup
+    assert '<span class="badge newly-created-badge">Just added</span>' in markup
     assert 'data-notice="Task added"' in markup
 
 

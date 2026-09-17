@@ -180,6 +180,7 @@
             </div>
           </div>
           <div class="badges">
+            {% if task.id == created_task_id %}<span class="badge newly-created-badge">Just added</span>{% endif %}
             <span class="badge focus-status-badge focus-only">{{ status_labels[task.status] }}</span>
             {% if task.overdue %}<span class="badge danger derived-badge overdue-badge">overdue</span>{% endif %}
             {% if task.stalled %}<span class="badge warning derived-badge stalled-badge">stalled</span>{% endif %}
