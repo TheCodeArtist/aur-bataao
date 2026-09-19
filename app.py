@@ -113,6 +113,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
 
     with app.app_context():
         init_db()
+        recover_interrupted_agent_runs()
         seed_default_llm_profile()
         reconcile_active_labels()
         app.extensions["last_reconcile_monotonic"] = time.monotonic()
@@ -189,6 +190,27 @@ def seed_default_llm_profile() -> None:
         make_default=True,
     )
     db.commit()
+
+
+def recover_interrupted_agent_runs() -> int:
+    """Fail runs that could not finish because the application stopped."""
+    db = get_db()
+    store = AgentStore(db)
+    run_ids = [
+        row["id"]
+        for row in db.execute(
+            "SELECT id FROM agent_runs WHERE status = 'running'"
+        ).fetchall()
+    ]
+    for run_id in run_ids:
+        store.transition_run(
+            run_id,
+            "failed",
+            error="Agent run was interrupted by an application restart",
+        )
+    if run_ids:
+        db.commit()
+    return len(run_ids)
 
 
 def migrate_create_request_ids(db: sqlite3.Connection) -> None:
@@ -1486,6 +1508,19 @@ def register_routes(app: Flask) -> None:
         outcome = _agent_runner(get_db()).decide(
             approval_id, body.get("approved")
         )
+        status = 202 if outcome.run.status == "waiting_approval" else 200
+        response = _outcome_dict(outcome)
+        if outcome.run.status == "failed":
+            status = 502
+            response["error"] = outcome.run.error
+        return jsonify(**response), status
+
+    @app.post("/api/agent/runs/<run_id>/resume")
+    def resume_agent_run(run_id: str):
+        body = _json_body()
+        if body:
+            raise ValueError(f"Unsupported field: {sorted(body)[0]}")
+        outcome = _agent_runner(get_db()).resume(run_id)
         status = 202 if outcome.run.status == "waiting_approval" else 200
         response = _outcome_dict(outcome)
         if outcome.run.status == "failed":

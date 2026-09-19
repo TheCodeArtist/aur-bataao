@@ -218,9 +218,10 @@ function renderMessages(messages) {
   messageList.scrollTop = messageList.scrollHeight;
 }
 
-function renderApprovals(approvals) {
+function renderApprovals(approvals, runId = null) {
   approvalList.replaceChildren();
-  approvals.filter((approval) => approval.status === "pending").forEach((approval) => {
+  const pending = approvals.filter((approval) => approval.status === "pending");
+  pending.forEach((approval) => {
     const card = document.createElement("article");
     card.className = "approval-card";
     const heading = document.createElement("h2");
@@ -243,6 +244,27 @@ function renderApprovals(approvals) {
     card.append(heading, argumentsBlock, actions);
     approvalList.append(card);
   });
+  const hasUnconsumedDecision = approvals.some((approval) => (
+    approval.status === "approved" || approval.status === "rejected"
+  ));
+  if (!pending.length && hasUnconsumedDecision && runId) {
+    const card = document.createElement("article");
+    card.className = "approval-card";
+    const heading = document.createElement("h2");
+    heading.textContent = "Continue this interrupted run?";
+    const copy = document.createElement("p");
+    copy.textContent = "Your approval decision was saved, but the run stopped before it could continue.";
+    const actions = document.createElement("div");
+    actions.className = "approval-actions";
+    const resume = document.createElement("button");
+    resume.type = "button";
+    resume.className = "primary";
+    resume.textContent = "Resume";
+    resume.addEventListener("click", () => resumeRun(runId));
+    actions.append(resume);
+    card.append(heading, copy, actions);
+    approvalList.append(card);
+  }
 }
 
 async function selectSession(sessionId) {
@@ -262,7 +284,7 @@ async function selectSession(sessionId) {
     const latestRun = detail.runs.at(-1);
     if (latestRun?.status === "waiting_approval") {
       const runDetail = await api(`/api/agent/runs/${latestRun.id}`);
-      renderApprovals(runDetail.approvals);
+      renderApprovals(runDetail.approvals, latestRun.id);
     } else {
       renderApprovals([]);
     }
@@ -324,6 +346,21 @@ async function decideApproval(approvalId, approved) {
     await loadSessions();
     await selectSession(state.sessionId);
     renderApprovals(outcome.pending_approvals);
+  } catch (error) { showError(error); }
+  finally { setBusy(false); }
+}
+
+async function resumeRun(runId) {
+  if (state.busy) return;
+  clearError();
+  setBusy(true, "Resuming saved decision…");
+  try {
+    await api(`/api/agent/runs/${runId}/resume`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    await loadSessions();
+    await selectSession(state.sessionId);
   } catch (error) { showError(error); }
   finally { setBusy(false); }
 }

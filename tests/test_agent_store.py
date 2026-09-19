@@ -132,3 +132,42 @@ def test_session_archive_and_missing_records_are_explicit(app):
             store.create_run(session.id, now=NOW)
         with pytest.raises(AgentNotFoundError):
             store.session("missing")
+
+
+def test_application_restart_marks_running_run_as_failed(tmp_path):
+    database = tmp_path / "restart.sqlite3"
+    first_app = create_app(
+        {
+            "TESTING": True,
+            "DATABASE": str(database),
+            "USER_TIMEZONE": "Asia/Kolkata",
+            "LLM_MODEL": "",
+        }
+    )
+    with first_app.app_context():
+        db = get_db()
+        profile = LlmProfileStore(db).create(
+            {
+                "name": "Local",
+                "base_url": "http://localhost:1234/v1",
+                "model": "local-model",
+            },
+            now=NOW,
+        )
+        session = AgentStore(db).create_session(profile.id, now=NOW)
+        run = AgentStore(db).create_run(session.id, now=NOW)
+        db.commit()
+
+    restarted_app = create_app(
+        {
+            "TESTING": True,
+            "DATABASE": str(database),
+            "USER_TIMEZONE": "Asia/Kolkata",
+            "LLM_MODEL": "",
+        }
+    )
+    with restarted_app.app_context():
+        recovered = AgentStore(get_db()).run(run.id)
+
+        assert recovered.status == "failed"
+        assert recovered.error == "Agent run was interrupted by an application restart"

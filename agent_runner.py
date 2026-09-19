@@ -87,16 +87,28 @@ class AgentRunner:
             raise ValueError("This run is not waiting for approval")
         self.store.decide_approval(approval_id, approved, now=now)
         self.db.commit()
+        return self.resume(run.id, now=now)
+
+    def resume(
+        self, run_id: str, *, now: datetime | None = None
+    ) -> AgentOutcome:
+        run = self.store.run(run_id)
+        if run.status != "waiting_approval":
+            raise ValueError("This run is not waiting for approval")
 
         approvals = self.store.approvals_for_run(run.id)
         pending = tuple(item for item in approvals if item.status == "pending")
         if pending:
             return AgentOutcome(self.store.run(run.id), pending, None)
 
+        decided = [
+            item for item in approvals if item.status in {"approved", "rejected"}
+        ]
+        if not decided:
+            raise ValueError("This run has no decided approvals to resume")
+
         self.store.transition_run(run.id, "running", now=now)
-        for item in approvals:
-            if item.status not in {"approved", "rejected"}:
-                continue
+        for item in decided:
             if item.status == "approved":
                 result = self._execute_tool(item.tool_name, item.arguments, now=now)
             else:

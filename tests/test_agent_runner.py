@@ -275,6 +275,39 @@ def test_rejection_returns_tool_result_without_mutating(app):
         assert result == {"ok": False, "error": "User rejected this change"}
 
 
+def test_resume_consumes_a_decision_saved_before_interruption(app):
+    with app.app_context():
+        db = get_db()
+        session = create_session(db)
+        provider = FakeProvider(
+            [
+                completion(
+                    calls=[
+                        CompletionToolCall(
+                            "call-create", "create_task", '{"title":"Recovered task"}'
+                        )
+                    ]
+                ),
+                completion("Recovered task was added."),
+            ]
+        )
+        runner = AgentRunner(
+            db,
+            app.config["TZINFO"],
+            environ={},
+            provider_factory=lambda _: provider,
+        )
+        paused = runner.start(session.id, "Add a task", now=NOW)
+        approval = paused.pending_approvals[0]
+        AgentStore(db).decide_approval(approval.id, True, now=NOW)
+        db.commit()
+
+        outcome = runner.resume(paused.run.id, now=NOW)
+
+        assert outcome.run.status == "completed"
+        assert db.execute("SELECT title FROM tasks").fetchone()["title"] == "Recovered task"
+
+
 def test_provider_failure_is_persisted_without_exposing_secret(app):
     class FailingProvider:
         def complete(self, messages, *, tools):
