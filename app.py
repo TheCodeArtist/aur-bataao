@@ -668,113 +668,6 @@ def _query_task_id(name: str) -> int | None:
     return parsed if parsed > 0 else None
 
 
-def _valid_follow_up_date(value: Any) -> str | None:
-    if value in (None, ""):
-        return None
-    if not isinstance(value, str):
-        raise ValueError("Next follow-up must be YYYY-MM-DD")
-    try:
-        parsed = date.fromisoformat(value)
-    except ValueError as exc:
-        raise ValueError("Next follow-up must be YYYY-MM-DD") from exc
-    if parsed < local_today():
-        raise ValueError("Next follow-up cannot be in the past")
-    return parsed.isoformat()
-
-
-def _valid_follow_up_time(value: Any) -> str | None:
-    if value in (None, ""):
-        return None
-    if not isinstance(value, str):
-        raise ValueError("Follow-up time must be HH:MM")
-    try:
-        parsed = datetime.strptime(value, "%H:%M")
-    except ValueError as exc:
-        raise ValueError("Follow-up time must be HH:MM") from exc
-    if parsed.strftime("%H:%M") != value:
-        raise ValueError("Follow-up time must be HH:MM")
-    return value
-
-
-def _person_name(value: Any) -> str:
-    if not isinstance(value, str):
-        raise ValueError("Enter who you are waiting on")
-    name = " ".join(value.split())
-    if not name or len(name) > 100:
-        raise ValueError("Person name must be between 1 and 100 characters")
-    return name
-
-
-def _waiting_note(value: Any) -> str:
-    if value is None:
-        return ""
-    if not isinstance(value, str):
-        raise ValueError("Note must be text")
-    note = value.strip()
-    if len(note) > 1000:
-        raise ValueError("Note must be at most 1000 characters")
-    return note
-
-
-def _would_create_dependency_cycle(db: sqlite3.Connection, blocked_id: int, blocker_id: int) -> bool:
-    row = db.execute(
-        """
-        WITH RECURSIVE chain(task_id) AS (
-            SELECT ?
-            UNION
-            SELECT d.blocker_task_id
-            FROM task_dependencies d JOIN chain c ON d.blocked_task_id = c.task_id
-        )
-        SELECT 1 FROM chain WHERE task_id = ? LIMIT 1
-        """,
-        (blocker_id, blocked_id),
-    ).fetchone()
-    return row is not None
-
-
-def _add_dependency_record(
-    db: sqlite3.Connection,
-    blocked_id: int,
-    blocker_id: int,
-) -> None:
-    if blocker_id == blocked_id:
-        raise ValueError("A task cannot block itself")
-    blocked_task = _task_or_404(db, blocked_id)
-    blocker = _task_or_404(db, blocker_id)
-    if blocked_task["status"] == "done":
-        raise ValueError("Reopen the completed task before adding a blocker")
-    if blocker["status"] == "done":
-        raise ValueError("A completed task cannot be an active blocker")
-    if _would_create_dependency_cycle(db, blocked_id, blocker_id):
-        raise ValueError("That dependency would create a cycle")
-    now = utc_now()
-    cursor = db.execute(
-        "INSERT OR IGNORE INTO task_dependencies(blocked_task_id, blocker_task_id) "
-        "VALUES (?, ?)",
-        (blocked_id, blocker_id),
-    )
-    if cursor.rowcount:
-        _record_event(
-            db,
-            blocked_id,
-            "dependency_added",
-            details={"blocker_task_id": blocker_id},
-            now=now,
-        )
-
-
-def _resolve_active_waiting(
-    db: sqlite3.Connection,
-    task_id: int,
-    now: datetime,
-    *,
-    reason: str,
-) -> sqlite3.Row | None:
-    return _task_service(db).resolve_active_waiting(
-        task_id, now, reason=reason
-    )
-
-
 def register_routes(app: Flask) -> None:
     @app.errorhandler(ValueError)
     def invalid_input(exc: ValueError):
@@ -1146,29 +1039,20 @@ def register_routes(app: Flask) -> None:
     @app.post("/api/tasks/<int:task_id>/comments")
     def add_comment(task_id: int):
         body = _command_body()
-        comment = str(body.get("body", "")).strip()
-        if not comment or len(comment) > 2000:
-            raise ValueError("Comment must be between 1 and 2000 characters")
-        counts = bool(body.get("counts_as_progress", False))
         db = get_db()
-        _task_or_404(db, task_id)
-        now = utc_now()
-        cursor = db.execute(
-            "INSERT INTO comments(task_id, body, created_at) VALUES (?, ?, ?)",
-            (task_id, comment, iso_utc(now)),
-        )
-        _record_event(
-            db,
-            task_id,
-            "comment_added",
-            counts_as_progress=counts,
-            details={"comment_id": cursor.lastrowid},
-            now=now,
-        )
-        db.commit()
+        try:
+            comment_id = _task_service(db).add_comment(
+                task_id,
+                body.get("body", ""),
+                counts_as_progress=bool(body.get("counts_as_progress", False)),
+            )
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
         if _is_form_request():
             return _task_redirect(task_id, "comment-added", expanded=True)
-        return jsonify(comment_id=cursor.lastrowid), 201
+        return jsonify(comment_id=comment_id), 201
 
     @app.post(
         "/tasks/<int:task_id>/waiting",
@@ -1177,115 +1061,9 @@ def register_routes(app: Flask) -> None:
     @app.put("/api/tasks/<int:task_id>/waiting")
     def set_waiting(task_id: int):
         body = _command_body()
-        unknown = set(body) - {
-            "person_name",
-            "note",
-            "next_follow_up_on",
-            "next_follow_up_time",
-        }
-        if unknown:
-            raise ValueError(f"Unsupported field: {sorted(unknown)[0]}")
-
         db = get_db()
-        task = _task_or_404(db, task_id)
-        waiting = _active_waiting(db, task_id)
-        if task["status"] == "done":
-            raise ValueError("Reopen the completed task before waiting on someone")
-        if waiting is None and "person_name" not in body:
-            raise ValueError("Enter who you are waiting on")
-
-        person_name = _person_name(
-            body.get("person_name", waiting["person_name"] if waiting else None)
-        )
-        note = _waiting_note(body.get("note", waiting["note"] if waiting else ""))
-        if "next_follow_up_on" in body:
-            next_follow_up_on = _valid_follow_up_date(body["next_follow_up_on"])
-        elif waiting is not None:
-            next_follow_up_on = waiting["next_follow_up_on"]
-        else:
-            next_follow_up_on = (local_today() + timedelta(days=3)).isoformat()
-        if "next_follow_up_time" in body:
-            next_follow_up_time = _valid_follow_up_time(
-                body["next_follow_up_time"]
-            )
-        elif waiting is not None:
-            next_follow_up_time = waiting["next_follow_up_time"]
-        else:
-            next_follow_up_time = None
-        if next_follow_up_on is None:
-            if next_follow_up_time is not None:
-                raise ValueError("Choose a follow-up date before adding a time")
-            next_follow_up_time = None
-
-        now = utc_now()
-        created = waiting is None
         try:
-            if created:
-                db.execute(
-                    """
-                    INSERT INTO task_waiting(
-                        task_id, person_name, note, started_at,
-                        next_follow_up_on, next_follow_up_time, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        task_id,
-                        person_name,
-                        note,
-                        iso_utc(now),
-                        next_follow_up_on,
-                        next_follow_up_time,
-                        iso_utc(now),
-                    ),
-                )
-                _record_event(
-                    db,
-                    task_id,
-                    "waiting_started",
-                    details={
-                        "person_name": person_name,
-                        "note": note,
-                        "next_follow_up_on": next_follow_up_on,
-                        "next_follow_up_time": next_follow_up_time,
-                    },
-                    now=now,
-                )
-            else:
-                changed = (
-                    person_name != waiting["person_name"]
-                    or note != waiting["note"]
-                    or next_follow_up_on != waiting["next_follow_up_on"]
-                    or next_follow_up_time != waiting["next_follow_up_time"]
-                )
-                if changed:
-                    db.execute(
-                        """
-                        UPDATE task_waiting
-                        SET person_name = ?, note = ?, next_follow_up_on = ?,
-                            next_follow_up_time = ?, updated_at = ?
-                        WHERE id = ? AND resolved_at IS NULL
-                        """,
-                        (
-                            person_name,
-                            note,
-                            next_follow_up_on,
-                            next_follow_up_time,
-                            iso_utc(now),
-                            waiting["id"],
-                        ),
-                    )
-                    _record_event(
-                        db,
-                        task_id,
-                        "waiting_updated",
-                        details={
-                            "person_name": person_name,
-                            "note": note,
-                            "next_follow_up_on": next_follow_up_on,
-                            "next_follow_up_time": next_follow_up_time,
-                        },
-                        now=now,
-                    )
+            result = _task_service(db).set_waiting(task_id, body)
             db.commit()
         except Exception:
             db.rollback()
@@ -1294,7 +1072,7 @@ def register_routes(app: Flask) -> None:
         if _is_form_request():
             return _task_redirect(task_id, "waiting-saved", expanded=True)
         response = jsonify(task=_serialize_task(db, _task_or_404(db, task_id)))
-        return (response, 201) if created else response
+        return (response, 201) if result.created else response
 
     @app.post(
         "/tasks/<int:task_id>/follow-ups",
@@ -1303,62 +1081,13 @@ def register_routes(app: Flask) -> None:
     @app.post("/api/tasks/<int:task_id>/follow-ups")
     def record_follow_up(task_id: int):
         body = _command_body()
-        unknown = set(body) - {
-            "note", "next_follow_up_on", "next_follow_up_time"
-        }
-        if unknown:
-            raise ValueError(f"Unsupported field: {sorted(unknown)[0]}")
-        note = _waiting_note(body.get("note"))
-        next_follow_up_on = _valid_follow_up_date(
-            body.get(
-                "next_follow_up_on",
-                (local_today() + timedelta(days=3)).isoformat(),
-            )
-        )
         db = get_db()
-        task = _task_or_404(db, task_id)
-        if task["status"] == "done":
-            raise ValueError("A completed task cannot be followed up")
-        waiting = _active_waiting(db, task_id)
-        if waiting is None:
-            raise ValueError("This task is not waiting on anyone")
-        next_follow_up_time = _valid_follow_up_time(
-            body["next_follow_up_time"]
-            if "next_follow_up_time" in body
-            else waiting["next_follow_up_time"]
-        )
-        if next_follow_up_on is None and next_follow_up_time is not None:
-            raise ValueError("Choose a follow-up date before adding a time")
-        now = utc_now()
-        db.execute(
-            """
-            UPDATE task_waiting
-            SET last_followed_up_at = ?, next_follow_up_on = ?,
-                next_follow_up_time = ?, updated_at = ?
-            WHERE id = ? AND resolved_at IS NULL
-            """,
-            (
-                iso_utc(now),
-                next_follow_up_on,
-                next_follow_up_time,
-                iso_utc(now),
-                waiting["id"],
-            ),
-        )
-        _record_event(
-            db,
-            task_id,
-            "followed_up",
-            counts_as_progress=True,
-            details={
-                "person_name": waiting["person_name"],
-                "note": note,
-                "next_follow_up_on": next_follow_up_on,
-                "next_follow_up_time": next_follow_up_time,
-            },
-            now=now,
-        )
-        db.commit()
+        try:
+            _task_service(db).record_follow_up(task_id, body)
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
         if _is_form_request():
             return _task_redirect(task_id, "follow-up-recorded", expanded=True)
         return jsonify(task=_serialize_task(db, _task_or_404(db, task_id))), 201
@@ -1375,11 +1104,12 @@ def register_routes(app: Flask) -> None:
             raise ValueError(f"Unsupported field: {sorted(unknown)[0]}")
 
         db = get_db()
-        _task_or_404(db, task_id)
-        now = utc_now()
-        if _resolve_active_waiting(db, task_id, now, reason="resolved") is None:
-            raise ValueError("This task is not waiting on anyone")
-        db.commit()
+        try:
+            _task_service(db).resolve_waiting(task_id)
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
         if _is_form_request():
             return _task_redirect(task_id, "waiting-resolved")
         return jsonify(task=_serialize_task(db, _task_or_404(db, task_id)))
@@ -1391,27 +1121,13 @@ def register_routes(app: Flask) -> None:
     @app.post("/api/tasks/<int:task_id>/labels")
     def add_label(task_id: int):
         body = _command_body()
-        name = str(body.get("name", "")).strip().lower()
-        if not name or len(name) > 32:
-            raise ValueError("Label must be between 1 and 32 characters")
-        if name.startswith("active:"):
-            raise ValueError("The active: prefix is reserved")
         db = get_db()
-        _task_or_404(db, task_id)
-        now = utc_now()
-        db.execute("INSERT OR IGNORE INTO labels(name, type) VALUES (?, 'manual')", (name,))
-        label = db.execute("SELECT id, type FROM labels WHERE name = ?", (name,)).fetchone()
-        if label["type"] != "manual":
-            raise ValueError("That label name is reserved")
-        db.execute(
-            """
-            INSERT OR IGNORE INTO task_labels(task_id, label_id, source, added_at)
-            VALUES (?, ?, 'user', ?)
-            """,
-            (task_id, label["id"], iso_utc(now)),
-        )
-        _record_event(db, task_id, "label_added", details={"label_id": label["id"]}, now=now)
-        db.commit()
+        try:
+            _task_service(db).add_label(task_id, body.get("name", ""))
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
         if _is_form_request():
             return _task_redirect(task_id, "label-added", expanded=True)
         return jsonify(task=_serialize_task(db, _task_or_404(db, task_id))), 201
@@ -1423,21 +1139,19 @@ def register_routes(app: Flask) -> None:
     @app.delete("/api/tasks/<int:task_id>/labels/<int:label_id>")
     def remove_label(task_id: int, label_id: int):
         db = get_db()
-        _task_or_404(db, task_id)
-        now = utc_now()
-        cursor = db.execute(
-            """
-            UPDATE task_labels SET removed_at = ?
-            WHERE task_id = ? AND label_id = ? AND removed_at IS NULL
-            """,
-            (iso_utc(now), task_id, label_id),
-        )
-        if cursor.rowcount == 0:
+        try:
+            removed = _task_service(db).remove_label(task_id, label_id)
+            if removed:
+                db.commit()
+            else:
+                db.rollback()
+        except Exception:
+            db.rollback()
+            raise
+        if not removed:
             if _is_form_request():
                 raise ValueError("Active label not found")
             return jsonify(error="Active label not found"), 404
-        _record_event(db, task_id, "label_removed", details={"label_id": label_id}, now=now)
-        db.commit()
         if _is_form_request():
             return _task_redirect(task_id, "label-removed", expanded=True)
         return "", 204
@@ -1454,8 +1168,12 @@ def register_routes(app: Flask) -> None:
         except (TypeError, ValueError) as exc:
             raise ValueError("Choose a blocker task") from exc
         db = get_db()
-        _add_dependency_record(db, task_id, blocker_id)
-        db.commit()
+        try:
+            _task_service(db).add_dependency(task_id, blocker_id)
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
         if _is_form_request():
             return _task_redirect(task_id, "dependency-added", expanded=True)
         return jsonify(task=_serialize_task(db, _task_or_404(db, task_id))), 201
@@ -1470,8 +1188,12 @@ def register_routes(app: Flask) -> None:
         except (TypeError, ValueError) as exc:
             raise ValueError("Choose a blocked task") from exc
         db = get_db()
-        _add_dependency_record(db, blocked_id, blocker_id)
-        db.commit()
+        try:
+            _task_service(db).add_dependency(blocked_id, blocker_id)
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
         return _task_redirect(blocker_id, "dependency-added", expanded=True)
 
     @app.post(
@@ -1481,24 +1203,19 @@ def register_routes(app: Flask) -> None:
     @app.delete("/api/tasks/<int:task_id>/dependencies/<int:blocker_id>")
     def remove_dependency(task_id: int, blocker_id: int):
         db = get_db()
-        _task_or_404(db, task_id)
-        blocker = _task_or_404(db, blocker_id)
-        cursor = db.execute(
-            "DELETE FROM task_dependencies WHERE blocked_task_id = ? AND blocker_task_id = ?",
-            (task_id, blocker_id),
-        )
-        if cursor.rowcount == 0:
+        try:
+            removed = _task_service(db).remove_dependency(task_id, blocker_id)
+            if removed:
+                db.commit()
+            else:
+                db.rollback()
+        except Exception:
+            db.rollback()
+            raise
+        if not removed:
             if _is_form_request():
                 raise ValueError("Dependency not found")
             return jsonify(error="Dependency not found"), 404
-        _record_event(
-            db,
-            task_id,
-            "dependency_removed",
-            counts_as_progress=blocker["status"] != "done",
-            details={"blocker_task_id": blocker_id},
-        )
-        db.commit()
         if _is_form_request():
             return _task_redirect(task_id, "dependency-removed", expanded=True)
         return "", 204

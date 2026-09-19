@@ -96,3 +96,76 @@ def test_service_reports_missing_tasks_without_flask_coupling(app):
 
         with pytest.raises(TaskNotFoundError):
             service.update_task(999, {"title": "Missing"}, now=NOW)
+
+
+def test_service_exposes_agent_ready_task_actions(app):
+    with app.app_context():
+        db = get_db()
+        service = TaskService(db, app.config["TZINFO"])
+        task = service.create_task(title="Prepare launch", now=NOW)
+        blocker = service.create_task(title="Approve launch", now=NOW)
+
+        comment_id = service.add_comment(
+            task.task_id,
+            "Drafted the rollout plan",
+            counts_as_progress=True,
+            now=NOW,
+        )
+        waiting = service.set_waiting(
+            task.task_id,
+            {"person_name": "  Ravi   Kumar  ", "note": "Finance review"},
+            now=NOW,
+        )
+        label_id = service.add_label(task.task_id, "Launch", now=NOW)
+        assert service.add_dependency(task.task_id, blocker.task_id, now=NOW)
+        service.record_follow_up(
+            task.task_id,
+            {"note": "Sent the revised plan", "next_follow_up_on": "2026-09-24"},
+            now=NOW,
+        )
+        assert service.remove_label(task.task_id, label_id, now=NOW)
+        assert service.remove_dependency(task.task_id, blocker.task_id, now=NOW)
+        service.resolve_waiting(task.task_id, now=NOW)
+        db.commit()
+
+        assert comment_id > 0
+        assert waiting.created is True
+        assert service.active_waiting(task.task_id) is None
+        assert db.execute(
+            "SELECT last_progress_at FROM tasks WHERE id = ?", (task.task_id,)
+        ).fetchone()["last_progress_at"] is not None
+        event_types = [
+            row["event_type"]
+            for row in db.execute(
+                "SELECT event_type FROM task_events WHERE task_id = ? ORDER BY id",
+                (task.task_id,),
+            ).fetchall()
+        ]
+        assert event_types == [
+            "task_created",
+            "comment_added",
+            "waiting_started",
+            "label_added",
+            "dependency_added",
+            "followed_up",
+            "label_removed",
+            "dependency_removed",
+            "waiting_resolved",
+        ]
+
+
+def test_service_validates_tool_shaped_inputs_before_writes(app):
+    with app.app_context():
+        db = get_db()
+        service = TaskService(db, app.config["TZINFO"])
+        task = service.create_task(title="Safe task", now=NOW)
+
+        with pytest.raises(ValueError, match="Unsupported field"):
+            service.set_waiting(
+                task.task_id, {"person_name": "Ravi", "unexpected": True}, now=NOW
+            )
+        with pytest.raises(ValueError, match="cannot block itself"):
+            service.add_dependency(task.task_id, task.task_id, now=NOW)
+
+        assert service.active_waiting(task.task_id) is None
+        assert db.execute("SELECT count(*) FROM task_dependencies").fetchone()[0] == 0
