@@ -101,6 +101,8 @@ def test_approval_survives_pause_and_records_decision(app):
         assert store.approval(approval.id).arguments == {"task_id": 7}
         decided = store.decide_approval(approval.id, True, now=NOW)
         assert decided.status == "approved"
+        consumed = store.mark_approval_consumed(approval.id, now=NOW)
+        assert consumed.status == "executed"
         with pytest.raises(ValueError, match="already been decided"):
             store.decide_approval(approval.id, False, now=NOW)
 
@@ -109,6 +111,7 @@ def test_approval_survives_pause_and_records_decision(app):
             "approval_requested",
             "run_waiting_approval",
             "approval_approved",
+            "approval_consumed",
         ]
 
 

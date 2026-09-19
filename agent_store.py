@@ -245,6 +245,30 @@ class AgentStore:
         )
         return self.run(run_id)
 
+    def add_usage(
+        self, run_id: str, usage: Mapping[str, Any], *, now: datetime | None = None
+    ) -> AgentRun:
+        current = self.run(run_id)
+        if current.status not in {"running", "waiting_approval"}:
+            raise ValueError("Token usage can only be added to an active run")
+        token_usage = _validated_usage(usage)
+        self.db.execute(
+            """
+            UPDATE agent_runs
+            SET prompt_tokens = prompt_tokens + ?,
+                completion_tokens = completion_tokens + ?,
+                total_tokens = total_tokens + ?
+            WHERE id = ?
+            """,
+            (
+                token_usage["prompt_tokens"],
+                token_usage["completion_tokens"],
+                token_usage["total_tokens"],
+                run_id,
+            ),
+        )
+        return self.run(run_id)
+
     def record_event(
         self,
         run_id: str,
@@ -307,8 +331,8 @@ class AgentStore:
         now: datetime | None = None,
     ) -> AgentApproval:
         run = self.run(run_id)
-        if run.status != "running":
-            raise ValueError("Approvals may only be requested for a running run")
+        if run.status not in {"running", "waiting_approval"}:
+            raise ValueError("Approvals may only be requested for an active run")
         approval_id = str(uuid.uuid4())
         timestamp = _iso_utc(now)
         self.db.execute(
@@ -333,7 +357,8 @@ class AgentStore:
             {"approval_id": approval_id, "tool_name": tool_name},
             now=now,
         )
-        self.transition_run(run_id, "waiting_approval", now=now)
+        if run.status == "running":
+            self.transition_run(run_id, "waiting_approval", now=now)
         return self.approval(approval_id)
 
     def approval(self, approval_id: str) -> AgentApproval:
@@ -343,6 +368,14 @@ class AgentStore:
         if row is None:
             raise AgentNotFoundError("Agent approval not found")
         return _approval(row)
+
+    def approvals_for_run(self, run_id: str) -> list[AgentApproval]:
+        self.run(run_id)
+        rows = self.db.execute(
+            "SELECT * FROM agent_approvals WHERE run_id = ? ORDER BY created_at, id",
+            (run_id,),
+        ).fetchall()
+        return [_approval(row) for row in rows]
 
     def decide_approval(
         self,
@@ -367,20 +400,25 @@ class AgentStore:
         )
         return self.approval(approval_id)
 
-    def mark_approval_executed(
+    def mark_approval_consumed(
         self, approval_id: str, *, now: datetime | None = None
     ) -> AgentApproval:
         approval = self.approval(approval_id)
-        if approval.status != "approved":
-            raise ValueError("Only an approved tool call may be marked executed")
+        if approval.status not in {"approved", "rejected"}:
+            raise ValueError("Only a decided tool call may be consumed")
+        decision = approval.status
         self.db.execute(
             "UPDATE agent_approvals SET status = 'executed' WHERE id = ?",
             (approval_id,),
         )
         self.record_event(
             approval.run_id,
-            "approval_executed",
-            {"approval_id": approval_id, "tool_name": approval.tool_name},
+            "approval_consumed",
+            {
+                "approval_id": approval_id,
+                "tool_name": approval.tool_name,
+                "decision": decision,
+            },
             now=now,
         )
         return self.approval(approval_id)
