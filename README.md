@@ -15,6 +15,28 @@ vanilla JavaScript, and SQLite.
   backlog view.
 - Tracks task dependencies and tasks that are **Waiting on** another person as
   blocking reasons, independently of workflow status.
+- Includes an interactive LLM agent that can inspect tasks, discuss next steps,
+  and propose task changes for explicit approval.
+
+## Interactive agent
+
+Open **Ask the agent** from the task header, or browse directly to
+<http://127.0.0.1:8080/agent>. The workspace supports multiple named profiles
+for local or remote OpenAI-compatible endpoints.
+
+An endpoint needs the Chat Completions API for chat. Tool-capable models can
+also inspect and update task data. Profiles without tool support remain usable
+for ordinary conversation. The models endpoint is optional: enter the model
+name manually if **List** is not supported.
+
+Read-only tools run automatically. Every task mutation is shown with its exact
+arguments and pauses until it is approved or rejected. Conversations, runs,
+tool events, failures, token totals, and pending approvals are stored in SQLite
+so an interrupted approval can be resumed.
+
+API keys are never stored in SQLite or returned to the browser. A profile stores
+only the name of an environment variable whose value the server resolves when
+a run starts.
 
 ### Waiting-on reminders
 
@@ -52,6 +74,13 @@ Configuration is optional. The available environment variables are:
 | `AUR_BATAAO_PORT` | `8080` | Server port |
 | `AUR_BATAAO_ATTACHMENTS_DIR` | `instance/attachments` | Attachment storage directory |
 | `AUR_BATAAO_OPEN_BROWSER` | `1` | Set to `0` to skip opening the browser |
+| `AUR_BATAAO_LLM_BASE_URL` | `http://127.0.0.1:1234/v1` | Default compatible API base URL |
+| `AUR_BATAAO_LLM_MODEL` | unset | Default model; setting this seeds the first profile |
+| `AUR_BATAAO_LLM_API_KEY_ENV` | unset | Name of the variable containing the API key |
+| `AUR_BATAAO_LLM_API_KEY` | unset | Direct key for the environment-seeded profile |
+| `AUR_BATAAO_LLM_TIMEOUT_SECONDS` | `60` | LLM timeout, from 1 to 600 seconds |
+| `AUR_BATAAO_LLM_SUPPORTS_TOOLS` | `1` | Set to `0` for a chat-only default model |
+| `AUR_BATAAO_AGENT_MAX_STEPS` | `8` | Maximum model/tool rounds, from 1 to 32 |
 
 Example:
 
@@ -62,6 +91,28 @@ $env:AUR_BATAAO_PORT = "8080"
 $env:AUR_BATAAO_ATTACHMENTS_DIR = "D:\AurBataao\attachments"
 .\.venv\Scripts\python.exe start.py
 ```
+
+To seed a local endpoint that does not require a key:
+
+```powershell
+$env:AUR_BATAAO_LLM_BASE_URL = "http://127.0.0.1:1234/v1"
+$env:AUR_BATAAO_LLM_MODEL = "your-local-model"
+.\.venv\Scripts\python.exe start.py
+```
+
+For an authenticated remote endpoint, keep the secret in its own environment
+variable and point the profile at that variable's name:
+
+```powershell
+$env:REMOTE_LLM_KEY = "your-secret-key"
+$env:AUR_BATAAO_LLM_BASE_URL = "https://llm.example.com/v1"
+$env:AUR_BATAAO_LLM_MODEL = "your-model"
+$env:AUR_BATAAO_LLM_API_KEY_ENV = "REMOTE_LLM_KEY"
+.\.venv\Scripts\python.exe start.py
+```
+
+If profiles already exist, startup does not replace them. Add or edit profiles
+from **Endpoint settings** in the agent workspace.
 
 Keep the default loopback host unless access is protected by a private network,
 VPN, or authenticated reverse proxy.
@@ -85,6 +136,14 @@ pytest --basetemp=.pytest-tmp
 The app initializes its schema automatically. Task-list loads reconcile active
 date labels at most once per minute, and an open browser checks for local
 midnight once per minute.
+
+The agent implementation is split into small boundaries:
+
+- `llm_provider.py` adapts the portable OpenAI-compatible API surface.
+- `llm_profiles.py` validates endpoint profiles and resolves key variables.
+- `agent_tools.py` defines the model-visible task capability boundary.
+- `agent_store.py` persists sessions, runs, events, messages, and approvals.
+- `agent_runner.py` owns the bounded tool loop and approval resume behavior.
 
 ### Git hooks
 
