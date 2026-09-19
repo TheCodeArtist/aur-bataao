@@ -24,6 +24,16 @@ body {
 .app-title { margin: 0; line-height: 0; }
 .app-icon { display: block; width: 56px; height: 56px; border-radius: 10px; object-fit: contain; }
 .header-actions { display: flex; align-items: center; gap: 7px; }
+.header-link {
+  display: inline-flex;
+  min-height: var(--control-height);
+  padding: 0.38rem 0.65rem;
+  align-items: center;
+  border-radius: 5px;
+  color: var(--muted);
+  text-decoration: none;
+}
+.header-link:hover { color: var(--text); background: var(--surface-hover); }
 #view-toggle {
   position: relative;
   display: inline-flex;

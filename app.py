@@ -892,6 +892,12 @@ def register_routes(app: Flask) -> None:
         response.headers["Cache-Control"] = "no-store"
         return response
 
+    @app.get("/agent")
+    def agent_page():
+        response = make_response(render_template("agent.html"))
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
     @app.post("/tasks", endpoint="create_task_form")
     @app.post("/api/tasks")
     def create_task():
@@ -1430,9 +1436,11 @@ def register_routes(app: Flask) -> None:
             raise ValueError(f"Unsupported field: {sorted(unknown)[0]}")
         outcome = _agent_runner(get_db()).start(session_id, body.get("content"))
         status = 202 if outcome.run.status == "waiting_approval" else 200
+        response = _outcome_dict(outcome)
         if outcome.run.status == "failed":
             status = 502
-        return jsonify(**_outcome_dict(outcome)), status
+            response["error"] = outcome.run.error
+        return jsonify(**response), status
 
     @app.post("/api/agent/approvals/<approval_id>")
     def decide_agent_approval(approval_id: str):
@@ -1444,9 +1452,11 @@ def register_routes(app: Flask) -> None:
             approval_id, body.get("approved")
         )
         status = 202 if outcome.run.status == "waiting_approval" else 200
+        response = _outcome_dict(outcome)
         if outcome.run.status == "failed":
             status = 502
-        return jsonify(**_outcome_dict(outcome)), status
+            response["error"] = outcome.run.error
+        return jsonify(**response), status
 
     @app.get("/api/agent/runs/<run_id>")
     def get_agent_run(run_id: str):

@@ -178,3 +178,14 @@ def test_agent_session_requires_a_configured_profile(client):
 
     assert response.status_code == 404
     assert response.get_json() == {"error": "Not found"}
+
+
+def test_agent_workspace_is_linked_from_the_task_app(client):
+    workspace = client.get("/agent")
+    tasks = client.get("/")
+
+    assert workspace.status_code == 200
+    assert b"Interactive agent" in workspace.data
+    assert b'id="profile-form"' in workspace.data
+    assert b'id="approval-list"' in workspace.data
+    assert b'href="/agent"' in tasks.data

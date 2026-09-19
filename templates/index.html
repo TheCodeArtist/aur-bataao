@@ -42,6 +42,7 @@
         <span id="active-task-count" class="muted"{% if not in_progress_count and not follow_up_count %} hidden{% endif %}>{% if in_progress_count %}{{ in_progress_count }} in progress{% endif %}{% if in_progress_count and follow_up_count %} · {% endif %}{% if follow_up_count %}{{ follow_up_count }} {% if follow_up_count == 1 %}needs{% else %}need{% endif %} follow-up{% endif %}</span>
       </div>
       <div class="header-actions">
+        <a class="quiet-button header-link" href="{{ url_for('agent_page') }}">Ask the agent</a>
         <button id="theme-toggle" class="theme-toggle" type="button" role="switch" aria-checked="false" aria-label="Switch to dark mode" title="Switch to dark mode">
           <svg class="theme-icon theme-icon-sun" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
             <circle cx="12" cy="12" r="3.5"></circle>
