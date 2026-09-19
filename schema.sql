@@ -95,3 +95,20 @@ CREATE INDEX IF NOT EXISTS ix_waiting_next_follow_up
 CREATE INDEX IF NOT EXISTS ix_events_task_date ON task_events(task_id, local_date);
 CREATE INDEX IF NOT EXISTS ix_task_labels_task ON task_labels(task_id, removed_at);
 CREATE INDEX IF NOT EXISTS ix_task_attachments_task ON task_attachments(task_id, id);
+
+CREATE TABLE IF NOT EXISTS llm_profiles (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE CHECK (length(name) BETWEEN 1 AND 100),
+    base_url TEXT NOT NULL CHECK (length(base_url) BETWEEN 1 AND 500),
+    model TEXT NOT NULL CHECK (length(model) BETWEEN 1 AND 200),
+    api_key_env TEXT CHECK (api_key_env IS NULL OR length(api_key_env) BETWEEN 1 AND 100),
+    timeout_seconds REAL NOT NULL DEFAULT 60
+        CHECK (timeout_seconds BETWEEN 1 AND 600),
+    supports_tools INTEGER NOT NULL DEFAULT 1 CHECK (supports_tools IN (0, 1)),
+    is_default INTEGER NOT NULL DEFAULT 0 CHECK (is_default IN (0, 1)),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_default_llm_profile
+    ON llm_profiles(is_default) WHERE is_default = 1;
