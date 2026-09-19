@@ -9,6 +9,7 @@ description = "A compact single-user task tracker"
 requires-python = ">=3.11"
 dependencies = [
   "Flask>=3.1,<4",
+  "openai>=3.16,<4",
   "tzdata>=2025.2",
   "waitress>=3.0,<4",
 ]
@@ -21,4 +22,4 @@ testpaths = ["tests"]
 addopts = "-q"
 
 [tool.setuptools]
-py-modules = ["app"]
+py-modules = ["app", "llm_provider", "task_service"]
