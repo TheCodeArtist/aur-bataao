@@ -399,7 +399,7 @@ class AgentStore:
     def approvals_for_run(self, run_id: str) -> list[AgentApproval]:
         self.run(run_id)
         rows = self.db.execute(
-            "SELECT * FROM agent_approvals WHERE run_id = ? ORDER BY created_at, id",
+            "SELECT * FROM agent_approvals WHERE run_id = ? ORDER BY rowid",
             (run_id,),
         ).fetchall()
         return [_approval(row) for row in rows]

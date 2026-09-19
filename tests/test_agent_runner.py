@@ -194,6 +194,53 @@ def test_mutation_pauses_then_approval_executes_and_resumes(app):
         assert tool_result["ok"] is True
 
 
+def test_parallel_mutations_wait_for_every_decision_before_execution(app):
+    with app.app_context():
+        db = get_db()
+        session = create_session(db)
+        provider = FakeProvider(
+            [
+                completion(
+                    calls=[
+                        CompletionToolCall(
+                            "call-one", "create_task", '{"title":"First task"}'
+                        ),
+                        CompletionToolCall(
+                            "call-two", "create_task", '{"title":"Second task"}'
+                        ),
+                    ]
+                ),
+                completion("Both tasks were added."),
+            ]
+        )
+        runner = AgentRunner(
+            db,
+            app.config["TZINFO"],
+            environ={},
+            provider_factory=lambda _: provider,
+        )
+
+        paused = runner.start(session.id, "Add both tasks", now=NOW)
+
+        assert len(paused.pending_approvals) == 2
+        still_waiting = runner.decide(
+            paused.pending_approvals[0].id, True, now=NOW
+        )
+        assert still_waiting.run.status == "waiting_approval"
+        assert len(still_waiting.pending_approvals) == 1
+        assert db.execute("SELECT count(*) FROM tasks").fetchone()[0] == 0
+
+        completed = runner.decide(
+            still_waiting.pending_approvals[0].id, True, now=NOW
+        )
+
+        assert completed.run.status == "completed"
+        assert [
+            row["title"]
+            for row in db.execute("SELECT title FROM tasks ORDER BY id").fetchall()
+        ] == ["First task", "Second task"]
+
+
 def test_paused_run_keeps_its_endpoint_snapshot_when_profile_changes(app):
     with app.app_context():
         db = get_db()
