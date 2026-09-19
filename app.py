@@ -7,6 +7,7 @@ import sqlite3
 import threading
 import time
 import uuid
+from dataclasses import asdict
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -24,6 +25,11 @@ from flask import (
     send_file,
     url_for,
 )
+
+from agent_runner import AgentOutcome, AgentRunner
+from agent_store import AgentNotFoundError, AgentStore
+from llm_profiles import LlmProfileNotFoundError, LlmProfileStore
+from llm_provider import ChatCompletionsProvider
 
 from task_service import (
     RANK_SPACING,
@@ -76,6 +82,13 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         MAX_ATTACHMENT_BYTES=10 * 1024 * 1024,
         MAX_ATTACHMENTS_PER_TASK=20,
         MAX_CONTENT_LENGTH=25 * 1024 * 1024,
+        LLM_BASE_URL=os.getenv("AUR_BATAAO_LLM_BASE_URL", "http://127.0.0.1:1234/v1"),
+        LLM_MODEL=os.getenv("AUR_BATAAO_LLM_MODEL", ""),
+        LLM_API_KEY_ENV=os.getenv("AUR_BATAAO_LLM_API_KEY_ENV")
+        or ("AUR_BATAAO_LLM_API_KEY" if os.getenv("AUR_BATAAO_LLM_API_KEY") else None),
+        LLM_TIMEOUT_SECONDS=_environment_number("AUR_BATAAO_LLM_TIMEOUT_SECONDS", 60),
+        LLM_SUPPORTS_TOOLS=os.getenv("AUR_BATAAO_LLM_SUPPORTS_TOOLS", "1") != "0",
+        AGENT_MAX_STEPS=_environment_integer("AUR_BATAAO_AGENT_MAX_STEPS", 8),
     )
     if test_config:
         app.config.update(test_config)
@@ -93,16 +106,38 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     Path(app.config["ATTACHMENTS_DIR"]).mkdir(parents=True, exist_ok=True)
     app.extensions["reconcile_lock"] = threading.Lock()
     app.extensions["last_reconcile_monotonic"] = 0.0
+    app.extensions["llm_provider_factory"] = ChatCompletionsProvider
 
     app.teardown_appcontext(close_db)
     register_routes(app)
 
     with app.app_context():
         init_db()
+        seed_default_llm_profile()
         reconcile_active_labels()
         app.extensions["last_reconcile_monotonic"] = time.monotonic()
 
     return app
+
+
+def _environment_number(name: str, default: float) -> float:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except ValueError as exc:
+        raise RuntimeError(f"{name} must be a number") from exc
+
+
+def _environment_integer(name: str, default: int) -> int:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except ValueError as exc:
+        raise RuntimeError(f"{name} must be an integer") from exc
 
 
 def get_db() -> sqlite3.Connection:
@@ -129,6 +164,29 @@ def init_db() -> None:
     migrate_waiting_times(db)
     migrate_legacy_subtasks(db)
     migrate_create_request_ids(db)
+    db.commit()
+
+
+def seed_default_llm_profile() -> None:
+    """Seed a first profile from environment configuration, when complete."""
+    model = current_app.config["LLM_MODEL"]
+    if not model:
+        return
+    db = get_db()
+    store = LlmProfileStore(db)
+    if store.list():
+        return
+    store.create(
+        {
+            "name": "Environment default",
+            "base_url": current_app.config["LLM_BASE_URL"],
+            "model": model,
+            "api_key_env": current_app.config["LLM_API_KEY_ENV"],
+            "timeout_seconds": current_app.config["LLM_TIMEOUT_SECONDS"],
+            "supports_tools": current_app.config["LLM_SUPPORTS_TOOLS"],
+        },
+        make_default=True,
+    )
     db.commit()
 
 
@@ -668,6 +726,50 @@ def _query_task_id(name: str) -> int | None:
     return parsed if parsed > 0 else None
 
 
+def _positive_id(value: Any, label: str) -> int:
+    if isinstance(value, bool):
+        raise ValueError(f"{label} must be a positive integer")
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{label} must be a positive integer") from exc
+    if parsed < 1:
+        raise ValueError(f"{label} must be a positive integer")
+    return parsed
+
+
+def _approval_dict(approval) -> dict[str, Any]:
+    return {
+        "id": approval.id,
+        "run_id": approval.run_id,
+        "tool_call_id": approval.tool_call_id,
+        "tool_name": approval.tool_name,
+        "arguments": approval.arguments,
+        "status": approval.status,
+        "created_at": approval.created_at,
+        "decided_at": approval.decided_at,
+    }
+
+
+def _outcome_dict(outcome: AgentOutcome) -> dict[str, Any]:
+    return {
+        "run": asdict(outcome.run),
+        "pending_approvals": [
+            _approval_dict(approval) for approval in outcome.pending_approvals
+        ],
+        "latest_content": outcome.latest_content,
+    }
+
+
+def _agent_runner(db: sqlite3.Connection) -> AgentRunner:
+    return AgentRunner(
+        db,
+        current_app.config["TZINFO"],
+        provider_factory=current_app.extensions["llm_provider_factory"],
+        max_steps=current_app.config["AGENT_MAX_STEPS"],
+    )
+
+
 def register_routes(app: Flask) -> None:
     @app.errorhandler(ValueError)
     def invalid_input(exc: ValueError):
@@ -683,6 +785,8 @@ def register_routes(app: Flask) -> None:
         return jsonify(error=str(exc)), 400
 
     @app.errorhandler(TaskNotFoundError)
+    @app.errorhandler(AgentNotFoundError)
+    @app.errorhandler(LlmProfileNotFoundError)
     @app.errorhandler(404)
     def not_found(_exc):
         if request.path.startswith("/api/"):
@@ -1225,3 +1329,134 @@ def register_routes(app: Flask) -> None:
         changed = reconcile_active_labels()
         current_app.extensions["last_reconcile_monotonic"] = time.monotonic()
         return jsonify(changes=changed)
+
+    @app.get("/api/llm-profiles")
+    def list_llm_profiles():
+        profiles = LlmProfileStore(get_db()).list()
+        return jsonify(profiles=[profile.public_dict() for profile in profiles])
+
+    @app.post("/api/llm-profiles")
+    def create_llm_profile():
+        body = _json_body()
+        make_default = body.pop("is_default", False)
+        if not isinstance(make_default, bool):
+            raise ValueError("is_default must be a boolean")
+        db = get_db()
+        try:
+            profile = LlmProfileStore(db).create(
+                body, make_default=make_default
+            )
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+        return jsonify(profile=profile.public_dict()), 201
+
+    @app.patch("/api/llm-profiles/<int:profile_id>")
+    def update_llm_profile(profile_id: int):
+        body = _json_body()
+        make_default = body.pop("is_default", None)
+        if make_default is not None and not isinstance(make_default, bool):
+            raise ValueError("is_default must be a boolean")
+        db = get_db()
+        try:
+            profile = LlmProfileStore(db).update(
+                profile_id, body, make_default=make_default
+            )
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+        return jsonify(profile=profile.public_dict())
+
+    @app.get("/api/llm-profiles/<int:profile_id>/models")
+    def list_llm_models(profile_id: int):
+        store = LlmProfileStore(get_db())
+        config = store.provider_config(profile_id)
+        provider = current_app.extensions["llm_provider_factory"](config)
+        try:
+            models = provider.list_models()
+        except Exception as exc:
+            message = str(exc).replace(config.api_key or "\0", "***")[:500]
+            return jsonify(error=message or "Could not list models"), 502
+        return jsonify(models=models)
+
+    @app.get("/api/agent/sessions")
+    def list_agent_sessions():
+        include_archived = request.args.get("include_archived") == "1"
+        sessions = AgentStore(get_db()).list_sessions(
+            include_archived=include_archived
+        )
+        return jsonify(sessions=[asdict(session) for session in sessions])
+
+    @app.post("/api/agent/sessions")
+    def create_agent_session():
+        body = _json_body()
+        unknown = set(body) - {"profile_id", "title"}
+        if unknown:
+            raise ValueError(f"Unsupported field: {sorted(unknown)[0]}")
+        db = get_db()
+        profile_store = LlmProfileStore(db)
+        profile_id = (
+            profile_store.get().id
+            if body.get("profile_id") is None
+            else _positive_id(body["profile_id"], "profile_id")
+        )
+        try:
+            session = AgentStore(db).create_session(
+                profile_id, title=body.get("title", "New conversation")
+            )
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+        return jsonify(session=asdict(session)), 201
+
+    @app.get("/api/agent/sessions/<session_id>")
+    def get_agent_session(session_id: str):
+        store = AgentStore(get_db())
+        session = store.session(session_id)
+        return jsonify(
+            session=asdict(session),
+            messages=store.messages(session_id),
+            runs=[asdict(run) for run in store.runs_for_session(session_id)],
+        )
+
+    @app.post("/api/agent/sessions/<session_id>/messages")
+    def send_agent_message(session_id: str):
+        body = _json_body()
+        unknown = set(body) - {"content"}
+        if unknown:
+            raise ValueError(f"Unsupported field: {sorted(unknown)[0]}")
+        outcome = _agent_runner(get_db()).start(session_id, body.get("content"))
+        status = 202 if outcome.run.status == "waiting_approval" else 200
+        if outcome.run.status == "failed":
+            status = 502
+        return jsonify(**_outcome_dict(outcome)), status
+
+    @app.post("/api/agent/approvals/<approval_id>")
+    def decide_agent_approval(approval_id: str):
+        body = _json_body()
+        unknown = set(body) - {"approved"}
+        if unknown:
+            raise ValueError(f"Unsupported field: {sorted(unknown)[0]}")
+        outcome = _agent_runner(get_db()).decide(
+            approval_id, body.get("approved")
+        )
+        status = 202 if outcome.run.status == "waiting_approval" else 200
+        if outcome.run.status == "failed":
+            status = 502
+        return jsonify(**_outcome_dict(outcome)), status
+
+    @app.get("/api/agent/runs/<run_id>")
+    def get_agent_run(run_id: str):
+        store = AgentStore(get_db())
+        run = store.run(run_id)
+        return jsonify(
+            run=asdict(run),
+            events=store.events(run_id),
+            approvals=[
+                _approval_dict(approval)
+                for approval in store.approvals_for_run(run_id)
+            ],
+        )

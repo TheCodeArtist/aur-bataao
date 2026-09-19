@@ -200,6 +200,17 @@ class AgentStore:
             raise AgentNotFoundError("Agent run not found")
         return _run(row)
 
+    def runs_for_session(self, session_id: str) -> list[AgentRun]:
+        self.session(session_id)
+        rows = self.db.execute(
+            """
+            SELECT * FROM agent_runs
+            WHERE session_id = ? ORDER BY started_at, id
+            """,
+            (session_id,),
+        ).fetchall()
+        return [_run(row) for row in rows]
+
     def transition_run(
         self,
         run_id: str,
