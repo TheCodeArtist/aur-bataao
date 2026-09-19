@@ -134,6 +134,29 @@ def test_executes_read_tool_and_returns_result_to_model(app):
         assert tool_result["result"][0]["title"] == "Prepare launch"
 
 
+def test_endpoint_without_tool_support_still_provides_chat(app):
+    with app.app_context():
+        db = get_db()
+        profile = LlmProfileStore(db, environ={}).get()
+        LlmProfileStore(db, environ={}).update(
+            profile.id, {"supports_tools": False}, now=NOW
+        )
+        db.commit()
+        session = create_session(db)
+        provider = FakeProvider([completion("I can still help you think it through.")])
+        runner = AgentRunner(
+            db,
+            app.config["TZINFO"],
+            environ={},
+            provider_factory=lambda _: provider,
+        )
+
+        outcome = runner.start(session.id, "Help me plan", now=NOW)
+
+        assert outcome.run.status == "completed"
+        assert provider.requests[0]["tools"] == ()
+
+
 def test_mutation_pauses_then_approval_executes_and_resumes(app):
     with app.app_context():
         db = get_db()
@@ -169,6 +192,55 @@ def test_mutation_pauses_then_approval_executes_and_resumes(app):
         assert db.execute("SELECT title FROM tasks").fetchone()["title"] == "Book venue"
         tool_result = json.loads(provider.requests[1]["messages"][-1]["content"])
         assert tool_result["ok"] is True
+
+
+def test_paused_run_keeps_its_endpoint_snapshot_when_profile_changes(app):
+    with app.app_context():
+        db = get_db()
+        session = create_session(db)
+        provider = FakeProvider(
+            [
+                completion(
+                    calls=[
+                        CompletionToolCall(
+                            "call-create", "create_task", '{"title":"Stable config"}'
+                        )
+                    ]
+                ),
+                completion("Added with the original run configuration."),
+            ]
+        )
+        configs = []
+
+        def provider_factory(config):
+            configs.append(config)
+            return provider
+
+        runner = AgentRunner(
+            db,
+            app.config["TZINFO"],
+            environ={},
+            provider_factory=provider_factory,
+        )
+        paused = runner.start(session.id, "Add it", now=NOW)
+        profile = LlmProfileStore(db, environ={}).get()
+        LlmProfileStore(db, environ={}).update(
+            profile.id,
+            {
+                "base_url": "https://changed.example.test/v1",
+                "model": "changed-model",
+            },
+            now=NOW,
+        )
+        db.commit()
+
+        runner.decide(paused.pending_approvals[0].id, True, now=NOW)
+
+        assert [config.base_url for config in configs] == [
+            "http://localhost:1234/v1",
+            "http://localhost:1234/v1",
+        ]
+        assert [config.model for config in configs] == ["fake-model", "fake-model"]
 
 
 def test_rejection_returns_tool_result_without_mutating(app):

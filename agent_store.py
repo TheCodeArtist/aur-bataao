@@ -42,6 +42,9 @@ class AgentRun:
     status: str
     base_url: str
     model: str
+    api_key_env: str | None
+    timeout_seconds: float
+    supports_tools: bool
     started_at: str
     completed_at: str | None
     error: str | None
@@ -171,14 +174,24 @@ class AgentStore:
         session = self.session(session_id)
         if session.status != "active":
             raise ValueError("Cannot run an archived agent session")
+        active = self.db.execute(
+            """
+            SELECT id FROM agent_runs
+            WHERE session_id = ? AND status IN ('running', 'waiting_approval')
+            """,
+            (session_id,),
+        ).fetchone()
+        if active is not None:
+            raise ValueError("Finish the active agent run before sending another message")
         profile = LlmProfileStore(self.db).get(session.profile_id)
         run_id = str(uuid.uuid4())
         timestamp = _iso_utc(now)
         self.db.execute(
             """
             INSERT INTO agent_runs (
-                id, session_id, profile_id, status, base_url, model, started_at
-            ) VALUES (?, ?, ?, 'running', ?, ?, ?)
+                id, session_id, profile_id, status, base_url, model,
+                api_key_env, timeout_seconds, supports_tools, started_at
+            ) VALUES (?, ?, ?, 'running', ?, ?, ?, ?, ?, ?)
             """,
             (
                 run_id,
@@ -186,6 +199,9 @@ class AgentStore:
                 profile.id,
                 profile.base_url,
                 profile.model,
+                profile.api_key_env,
+                profile.timeout_seconds,
+                int(profile.supports_tools),
                 timestamp,
             ),
         )
@@ -481,6 +497,9 @@ def _run(row: sqlite3.Row) -> AgentRun:
         status=row["status"],
         base_url=row["base_url"],
         model=row["model"],
+        api_key_env=row["api_key_env"],
+        timeout_seconds=float(row["timeout_seconds"]),
+        supports_tools=bool(row["supports_tools"]),
         started_at=row["started_at"],
         completed_at=row["completed_at"],
         error=row["error"],

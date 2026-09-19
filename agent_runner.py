@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -9,7 +10,6 @@ from zoneinfo import ZoneInfo
 
 from agent_store import AgentApproval, AgentRun, AgentStore
 from agent_tools import TaskToolRegistry, ToolNotFoundError
-from llm_profiles import LlmProfileStore
 from llm_provider import (
     ChatCompletionsProvider,
     CompletionResult,
@@ -115,9 +115,11 @@ class AgentRunner:
         self, run_id: str, *, now: datetime | None = None
     ) -> AgentOutcome:
         run = self.store.run(run_id)
-        profile_store = LlmProfileStore(self.db, environ=self.environ)
-        config = profile_store.provider_config(run.profile_id)
-        provider = self.provider_factory(config)
+        try:
+            config = self._run_config(run)
+            provider = self.provider_factory(config)
+        except Exception as exc:
+            return self._fail(run_id, _safe_error(exc), now=now)
         latest_content = None
 
         for _ in range(self.max_steps):
@@ -126,7 +128,10 @@ class AgentRunner:
                 return self._outcome(run_id, latest_content)
             messages = [self._system_message(now), *self.store.messages(run.session_id)]
             try:
-                completion = provider.complete(messages, tools=self.tools.openai_tools())
+                completion = provider.complete(
+                    messages,
+                    tools=self.tools.openai_tools() if config.supports_tools else (),
+                )
             except Exception as exc:
                 return self._fail(run_id, _safe_error(exc, config.api_key), now=now)
 
@@ -238,6 +243,21 @@ class AgentRunner:
             "role": "system",
             "content": f"{SYSTEM_PROMPT}\nCurrent local date and time: {local}.",
         }
+
+    def _run_config(self, run: AgentRun) -> LlmConfig:
+        environment = os.environ if self.environ is None else self.environ
+        api_key = None
+        if run.api_key_env:
+            api_key = environment.get(run.api_key_env)
+            if not api_key:
+                raise ValueError(f"Environment variable {run.api_key_env} is not set")
+        return LlmConfig(
+            base_url=run.base_url,
+            model=run.model,
+            api_key=api_key,
+            timeout_seconds=run.timeout_seconds,
+            supports_tools=run.supports_tools,
+        )
 
     def _fail(
         self, run_id: str, error: str, *, now: datetime | None

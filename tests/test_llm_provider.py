@@ -1,3 +1,6 @@
+import json
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from threading import Thread
 from types import SimpleNamespace
 
 import pytest
@@ -192,3 +195,95 @@ def test_invalid_completion_response_has_a_clear_protocol_error():
 
     with pytest.raises(LlmProtocolError, match="did not contain a choice"):
         provider.complete([{"role": "user", "content": "Help"}])
+
+
+def test_real_sdk_uses_openai_compatible_http_contract():
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            length = int(self.headers.get("Content-Length", "0"))
+            self.server.requests.append(  # type: ignore[attr-defined]
+                {
+                    "path": self.path,
+                    "authorization": self.headers.get("Authorization"),
+                    "body": json.loads(self.rfile.read(length)),
+                }
+            )
+            payload = {
+                "id": "chatcmpl-local",
+                "object": "chat.completion",
+                "created": 1,
+                "model": "served-model",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": "Local reply"},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 3,
+                    "completion_tokens": 2,
+                    "total_tokens": 5,
+                },
+            }
+            encoded = json.dumps(payload).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
+
+        def do_GET(self):
+            payload = {
+                "object": "list",
+                "data": [
+                    {
+                        "id": "served-model",
+                        "object": "model",
+                        "created": 1,
+                        "owned_by": "local",
+                    }
+                ],
+            }
+            encoded = json.dumps(payload).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
+
+        def log_message(self, *_):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    server.requests = []
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        provider = ChatCompletionsProvider(
+            LlmConfig(
+                f"http://127.0.0.1:{server.server_port}/v1",
+                "requested-model",
+                timeout_seconds=5,
+            )
+        )
+
+        result = provider.complete([{"role": "user", "content": "Hello"}])
+        models = provider.list_models()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+    assert result.content == "Local reply"
+    assert models == ("served-model",)
+    assert server.requests == [
+        {
+            "path": "/v1/chat/completions",
+            "authorization": "Bearer not-required",
+            "body": {
+                "messages": [{"role": "user", "content": "Hello"}],
+                "model": "requested-model",
+            },
+        }
+    ]

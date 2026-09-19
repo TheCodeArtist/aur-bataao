@@ -74,6 +74,8 @@ def test_run_state_machine_rejects_invalid_transitions(app):
         session = store.create_session(LlmProfileStore(db).get().id, now=NOW)
         run = store.create_run(session.id, now=NOW)
 
+        with pytest.raises(ValueError, match="Finish the active"):
+            store.create_run(session.id, now=NOW)
         with pytest.raises(ValueError, match="Failed runs require"):
             store.transition_run(run.id, "failed", now=NOW)
         store.transition_run(run.id, "completed", now=NOW)

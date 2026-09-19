@@ -164,6 +164,7 @@ def init_db() -> None:
     migrate_waiting_times(db)
     migrate_legacy_subtasks(db)
     migrate_create_request_ids(db)
+    migrate_agent_run_config(db)
     db.commit()
 
 
@@ -198,6 +199,40 @@ def migrate_create_request_ids(db: sqlite3.Connection) -> None:
     db.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS uq_tasks_create_request_id "
         "ON tasks(create_request_id) WHERE create_request_id IS NOT NULL"
+    )
+
+
+def migrate_agent_run_config(db: sqlite3.Connection) -> None:
+    """Snapshot complete endpoint configuration on runs created by older builds."""
+    columns = {
+        row["name"] for row in db.execute("PRAGMA table_info(agent_runs)").fetchall()
+    }
+    additions = {
+        "api_key_env": "TEXT",
+        "timeout_seconds": "REAL NOT NULL DEFAULT 60",
+        "supports_tools": "INTEGER NOT NULL DEFAULT 1",
+    }
+    for name, declaration in additions.items():
+        if name not in columns:
+            db.execute(f"ALTER TABLE agent_runs ADD COLUMN {name} {declaration}")
+    db.execute(
+        """
+        UPDATE agent_runs
+        SET api_key_env = COALESCE(
+                api_key_env,
+                (SELECT api_key_env FROM llm_profiles WHERE id = agent_runs.profile_id)
+            ),
+            timeout_seconds = COALESCE(
+                timeout_seconds,
+                (SELECT timeout_seconds FROM llm_profiles WHERE id = agent_runs.profile_id),
+                60
+            ),
+            supports_tools = COALESCE(
+                supports_tools,
+                (SELECT supports_tools FROM llm_profiles WHERE id = agent_runs.profile_id),
+                1
+            )
+        """
     )
 
 

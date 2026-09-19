@@ -131,6 +131,9 @@ CREATE TABLE IF NOT EXISTS agent_runs (
     ),
     base_url TEXT NOT NULL,
     model TEXT NOT NULL,
+    api_key_env TEXT,
+    timeout_seconds REAL NOT NULL DEFAULT 60 CHECK (timeout_seconds BETWEEN 1 AND 600),
+    supports_tools INTEGER NOT NULL DEFAULT 1 CHECK (supports_tools IN (0, 1)),
     started_at TEXT NOT NULL,
     completed_at TEXT,
     error TEXT,
@@ -175,6 +178,9 @@ CREATE INDEX IF NOT EXISTS ix_agent_sessions_updated
     ON agent_sessions(status, updated_at DESC);
 CREATE INDEX IF NOT EXISTS ix_agent_runs_session
     ON agent_runs(session_id, started_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_active_agent_run
+    ON agent_runs(session_id)
+    WHERE status IN ('running', 'waiting_approval');
 CREATE INDEX IF NOT EXISTS ix_agent_messages_session
     ON agent_messages(session_id, id);
 CREATE INDEX IF NOT EXISTS ix_agent_approvals_pending
