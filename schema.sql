@@ -112,3 +112,70 @@ CREATE TABLE IF NOT EXISTS llm_profiles (
 
 CREATE UNIQUE INDEX IF NOT EXISTS uq_default_llm_profile
     ON llm_profiles(is_default) WHERE is_default = 1;
+
+CREATE TABLE IF NOT EXISTS agent_sessions (
+    id TEXT PRIMARY KEY,
+    profile_id INTEGER NOT NULL REFERENCES llm_profiles(id) ON DELETE RESTRICT,
+    title TEXT NOT NULL CHECK (length(title) BETWEEN 1 AND 200),
+    status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'archived')),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS agent_runs (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL REFERENCES agent_sessions(id) ON DELETE CASCADE,
+    profile_id INTEGER NOT NULL REFERENCES llm_profiles(id) ON DELETE RESTRICT,
+    status TEXT NOT NULL CHECK (
+        status IN ('running', 'waiting_approval', 'completed', 'failed', 'cancelled')
+    ),
+    base_url TEXT NOT NULL,
+    model TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    completed_at TEXT,
+    error TEXT,
+    prompt_tokens INTEGER NOT NULL DEFAULT 0 CHECK (prompt_tokens >= 0),
+    completion_tokens INTEGER NOT NULL DEFAULT 0 CHECK (completion_tokens >= 0),
+    total_tokens INTEGER NOT NULL DEFAULT 0 CHECK (total_tokens >= 0)
+);
+
+CREATE TABLE IF NOT EXISTS agent_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL REFERENCES agent_sessions(id) ON DELETE CASCADE,
+    run_id TEXT REFERENCES agent_runs(id) ON DELETE SET NULL,
+    role TEXT NOT NULL CHECK (role IN ('system', 'user', 'assistant', 'tool')),
+    message_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS agent_run_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
+    sequence INTEGER NOT NULL CHECK (sequence > 0),
+    event_type TEXT NOT NULL,
+    details_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    UNIQUE (run_id, sequence)
+);
+
+CREATE TABLE IF NOT EXISTS agent_approvals (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
+    tool_call_id TEXT NOT NULL,
+    tool_name TEXT NOT NULL,
+    arguments_json TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'approved', 'rejected', 'executed')),
+    created_at TEXT NOT NULL,
+    decided_at TEXT,
+    UNIQUE (run_id, tool_call_id)
+);
+
+CREATE INDEX IF NOT EXISTS ix_agent_sessions_updated
+    ON agent_sessions(status, updated_at DESC);
+CREATE INDEX IF NOT EXISTS ix_agent_runs_session
+    ON agent_runs(session_id, started_at DESC);
+CREATE INDEX IF NOT EXISTS ix_agent_messages_session
+    ON agent_messages(session_id, id);
+CREATE INDEX IF NOT EXISTS ix_agent_approvals_pending
+    ON agent_approvals(status, created_at) WHERE status = 'pending';
