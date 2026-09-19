@@ -25,12 +25,18 @@ from flask import (
     url_for,
 )
 
+from task_service import (
+    RANK_SPACING,
+    SQLITE_INTEGER_MIN,
+    STATUS_LABELS,
+    TaskNotFoundError,
+    TaskService,
+    iso_utc,
+    parse_utc,
+    rebalance_task_ranks,
+    utc_now,
+)
 
-STATUS_LABELS = {
-    "todo": "To do",
-    "in_progress": "In progress",
-    "done": "Done",
-}
 TASK_VIEWS = {"focus", "manage", "blocked"}
 FORM_META_FIELDS = {"return_view", "expand", "task_id"}
 NOTICE_MESSAGES = {
@@ -48,11 +54,8 @@ NOTICE_MESSAGES = {
     "dependency-added": "Dependency added",
     "dependency-removed": "Dependency removed",
 }
-STATUSES = set(STATUS_LABELS)
 MAX_RECONCILE_AGE_SECONDS = 60
 PREVIEWABLE_IMAGE_TYPES = {"image/gif", "image/jpeg", "image/png", "image/webp"}
-RANK_SPACING = 1024
-SQLITE_INTEGER_MIN = -(2**63)
 SQLITE_INTEGER_MAX = 2**63 - 1
 DEFAULT_FOLLOW_UP_TIME = "09:00"
 EMPTY_STATE_HEROES = (
@@ -157,24 +160,6 @@ def _smart_ordered_task_ids(db: sqlite3.Connection) -> list[int]:
     ]
 
 
-def _rank_ordered_task_ids(db: sqlite3.Connection) -> list[int]:
-    return [
-        row["id"]
-        for row in db.execute(
-            "SELECT id FROM tasks ORDER BY rank_key, id"
-        ).fetchall()
-    ]
-
-
-def _rebalance_task_ranks(db: sqlite3.Connection, ordered_ids: list[int]) -> None:
-    """Assign compact unique ranks without transient uniqueness collisions."""
-    db.execute("UPDATE tasks SET rank_key = NULL")
-    db.executemany(
-        "UPDATE tasks SET rank_key = ? WHERE id = ?",
-        ((index * RANK_SPACING, task_id) for index, task_id in enumerate(ordered_ids, 1)),
-    )
-
-
 def migrate_task_ranks(db: sqlite3.Connection) -> None:
     """Add and safely initialize persistent task ranks for existing databases."""
     columns = {row["name"] for row in db.execute("PRAGMA table_info(tasks)").fetchall()}
@@ -184,7 +169,7 @@ def migrate_task_ranks(db: sqlite3.Connection) -> None:
     ranks = db.execute("SELECT rank_key FROM tasks").fetchall()
     rank_values = [row["rank_key"] for row in ranks]
     if any(value is None for value in rank_values) or len(rank_values) != len(set(rank_values)):
-        _rebalance_task_ranks(db, _smart_ordered_task_ids(db))
+        rebalance_task_ranks(db, _smart_ordered_task_ids(db))
 
     db.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS uq_tasks_rank_key ON tasks(rank_key)"
@@ -199,16 +184,6 @@ def migrate_waiting_times(db: sqlite3.Connection) -> None:
     }
     if "next_follow_up_time" not in columns:
         db.execute("ALTER TABLE task_waiting ADD COLUMN next_follow_up_time TEXT")
-
-
-def _new_task_rank_key(db: sqlite3.Connection) -> int:
-    first_rank = db.execute("SELECT MIN(rank_key) AS rank_key FROM tasks").fetchone()["rank_key"]
-    if first_rank is None:
-        return RANK_SPACING
-    if first_rank < SQLITE_INTEGER_MIN + RANK_SPACING:
-        _rebalance_task_ranks(db, _rank_ordered_task_ids(db))
-        first_rank = db.execute("SELECT MIN(rank_key) AS rank_key FROM tasks").fetchone()["rank_key"]
-    return first_rank - RANK_SPACING
 
 
 def migrate_legacy_subtasks(db: sqlite3.Connection) -> int:
@@ -240,18 +215,6 @@ def migrate_legacy_subtasks(db: sqlite3.Connection) -> int:
     return migrated
 
 
-def utc_now() -> datetime:
-    return datetime.now(timezone.utc)
-
-
-def iso_utc(value: datetime) -> str:
-    return value.astimezone(timezone.utc).isoformat(timespec="seconds")
-
-
-def local_date_for(value: datetime) -> str:
-    return value.astimezone(current_app.config["TZINFO"]).date().isoformat()
-
-
 def local_now() -> datetime:
     return datetime.now(current_app.config["TZINFO"])
 
@@ -260,9 +223,8 @@ def local_today() -> date:
     return local_now().date()
 
 
-def parse_utc(value: str) -> datetime:
-    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+def _task_service(db: sqlite3.Connection) -> TaskService:
+    return TaskService(db, current_app.config["TZINFO"])
 
 
 def _attach_active_label(
@@ -273,20 +235,8 @@ def _attach_active_label(
     *,
     allow_readd: bool = True,
 ) -> None:
-    name = f"active:{local_day}"
-    db.execute("INSERT OR IGNORE INTO labels(name, type) VALUES (?, 'active_date')", (name,))
-    label_id = db.execute("SELECT id FROM labels WHERE name = ?", (name,)).fetchone()["id"]
-    if not allow_readd and db.execute(
-        "SELECT 1 FROM task_labels WHERE task_id = ? AND label_id = ? LIMIT 1",
-        (task_id, label_id),
-    ).fetchone():
-        return
-    db.execute(
-        """
-        INSERT OR IGNORE INTO task_labels(task_id, label_id, source, added_at)
-        VALUES (?, ?, 'automatic', ?)
-        """,
-        (task_id, label_id, iso_utc(now)),
+    _task_service(db).attach_active_label(
+        task_id, local_day, now, allow_readd=allow_readd
     )
 
 
@@ -300,26 +250,14 @@ def _record_event(
     now: datetime | None = None,
     active_for_label: bool | None = None,
 ) -> None:
-    now = now or utc_now()
-    local_day = local_date_for(now)
-    db.execute(
-        """
-        INSERT INTO task_events(
-            task_id, event_type, counts_as_progress, occurred_at_utc, local_date, details_json
-        ) VALUES (?, ?, ?, ?, ?, ?)
-        """,
-        (task_id, event_type, int(counts_as_progress), iso_utc(now), local_day, json.dumps(details or {})),
+    _task_service(db).record_event(
+        task_id,
+        event_type,
+        counts_as_progress=counts_as_progress,
+        details=details,
+        now=now,
+        active_for_label=active_for_label,
     )
-    if counts_as_progress:
-        db.execute(
-            "UPDATE tasks SET last_progress_at = ?, updated_at = ? WHERE id = ?",
-            (iso_utc(now), iso_utc(now), task_id),
-        )
-        if active_for_label is None:
-            row = db.execute("SELECT status FROM tasks WHERE id = ?", (task_id,)).fetchone()
-            active_for_label = bool(row and row["status"] == "in_progress")
-        if active_for_label:
-            _attach_active_label(db, task_id, local_day, now)
 
 
 def _status_intervals(db: sqlite3.Connection, task: sqlite3.Row, now: datetime) -> list[tuple[datetime, datetime]]:
@@ -399,10 +337,7 @@ def _task_or_404(db: sqlite3.Connection, task_id: int) -> sqlite3.Row:
 
 
 def _active_waiting(db: sqlite3.Connection, task_id: int) -> sqlite3.Row | None:
-    return db.execute(
-        "SELECT * FROM task_waiting WHERE task_id = ? AND resolved_at IS NULL",
-        (task_id,),
-    ).fetchone()
+    return _task_service(db).active_waiting(task_id)
 
 
 def _attachment_path(stored_name: str) -> Path:
@@ -722,16 +657,6 @@ def _task_redirect(
     return redirect(f"{url_for('index', **values)}#task-{task_id}", code=303)
 
 
-def _create_request_id(value: Any) -> str | None:
-    if value in (None, ""):
-        return None
-    try:
-        parsed = uuid.UUID(str(value))
-    except (ValueError, AttributeError) as exc:
-        raise ValueError("Invalid task submission; reopen the form and try again") from exc
-    return parsed.hex
-
-
 def _query_task_id(name: str) -> int | None:
     value = request.args.get(name)
     if not value:
@@ -741,17 +666,6 @@ def _query_task_id(name: str) -> int | None:
     except ValueError:
         return None
     return parsed if parsed > 0 else None
-
-
-def _valid_due_date(value: Any) -> str | None:
-    if value in (None, ""):
-        return None
-    if not isinstance(value, str):
-        raise ValueError("Due date must be YYYY-MM-DD")
-    try:
-        return date.fromisoformat(value).isoformat()
-    except ValueError as exc:
-        raise ValueError("Due date must be YYYY-MM-DD") from exc
 
 
 def _valid_follow_up_date(value: Any) -> str | None:
@@ -849,54 +763,6 @@ def _add_dependency_record(
         )
 
 
-def _change_task_status(
-    db: sqlite3.Connection,
-    task: sqlite3.Row,
-    new_status: str,
-    now: datetime,
-) -> bool:
-    old_status = task["status"]
-    if old_status == new_status:
-        return False
-
-    db.execute(
-        "UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?",
-        (new_status, iso_utc(now), task["id"]),
-    )
-    counts = old_status == "in_progress" or new_status == "in_progress"
-    _record_event(
-        db,
-        task["id"],
-        "status_changed",
-        counts_as_progress=counts,
-        active_for_label=counts,
-        details={"old_status": old_status, "new_status": new_status},
-        now=now,
-    )
-    if new_status == "done":
-        event_type = "dependency_resolved"
-        counts_as_progress = True
-    elif old_status == "done":
-        event_type = "dependency_reopened"
-        counts_as_progress = False
-    else:
-        return True
-
-    for dependent in db.execute(
-        "SELECT blocked_task_id FROM task_dependencies WHERE blocker_task_id = ?",
-        (task["id"],),
-    ).fetchall():
-        _record_event(
-            db,
-            dependent["blocked_task_id"],
-            event_type,
-            counts_as_progress=counts_as_progress,
-            details={"blocker_task_id": task["id"]},
-            now=now,
-        )
-    return True
-
-
 def _resolve_active_waiting(
     db: sqlite3.Connection,
     task_id: int,
@@ -904,21 +770,9 @@ def _resolve_active_waiting(
     *,
     reason: str,
 ) -> sqlite3.Row | None:
-    waiting = _active_waiting(db, task_id)
-    if waiting is None:
-        return None
-    db.execute(
-        "UPDATE task_waiting SET resolved_at = ?, updated_at = ? WHERE id = ?",
-        (iso_utc(now), iso_utc(now), waiting["id"]),
+    return _task_service(db).resolve_active_waiting(
+        task_id, now, reason=reason
     )
-    _record_event(
-        db,
-        task_id,
-        "waiting_resolved",
-        details={"person_name": waiting["person_name"], "reason": reason},
-        now=now,
-    )
-    return waiting
 
 
 def register_routes(app: Flask) -> None:
@@ -935,6 +789,7 @@ def register_routes(app: Flask) -> None:
             )
         return jsonify(error=str(exc)), 400
 
+    @app.errorhandler(TaskNotFoundError)
     @app.errorhandler(404)
     def not_found(_exc):
         if request.path.startswith("/api/"):
@@ -1046,79 +901,22 @@ def register_routes(app: Flask) -> None:
         is_multipart = request.mimetype == "multipart/form-data"
         body = request.form if is_multipart or _is_form_request() else _json_body()
         uploads = request.files.getlist("attachments") if is_multipart else []
-        title = str(body.get("title", "")).strip()
-        if not title or len(title) > 200:
-            raise ValueError("Title must be between 1 and 200 characters")
         if "parent_task_id" in body:
             raise ValueError("Subtasks are no longer supported; create a blocking task instead")
-        blocks_task_id = body.get("blocks_task_id")
-        if blocks_task_id in (None, ""):
-            blocks_task_id = None
-        else:
-            try:
-                blocks_task_id = int(blocks_task_id)
-            except (TypeError, ValueError) as exc:
-                raise ValueError("Invalid blocked task") from exc
-        create_request_id = _create_request_id(body.get("request_id"))
         db = get_db()
-        if blocks_task_id is not None:
-            blocked_task = _task_or_404(db, blocks_task_id)
-            if blocked_task["status"] == "done":
-                raise ValueError("Reopen the completed task before adding a blocker")
-        now = utc_now()
         stored_paths: list[Path] = []
         try:
             db.execute("BEGIN IMMEDIATE")
-            existing = None
-            if create_request_id is not None:
-                existing = db.execute(
-                    "SELECT id FROM tasks WHERE create_request_id = ?",
-                    (create_request_id,),
-                ).fetchone()
-            if existing is not None:
-                task_id = existing["id"]
-                db.commit()
-                if _is_form_request():
-                    return _task_redirect(
-                        task_id,
-                        "task-created",
-                        view="manage",
-                        created=True,
-                    )
-                return jsonify(task=_serialize_task(db, _task_or_404(db, task_id))), 200
-            rank_key = _new_task_rank_key(db)
-            cursor = db.execute(
-                """
-                INSERT INTO tasks(
-                    rank_key, title, created_at, updated_at, create_request_id
-                ) VALUES (?, ?, ?, ?, ?)
-                """,
-                (
-                    rank_key,
-                    title,
-                    iso_utc(now),
-                    iso_utc(now),
-                    create_request_id,
-                ),
+            now = utc_now()
+            result = _task_service(db).create_task(
+                title=body.get("title", ""),
+                blocks_task_id=body.get("blocks_task_id"),
+                request_id=body.get("request_id"),
+                now=now,
             )
-            task_id = cursor.lastrowid
-            _record_event(db, task_id, "task_created", details={"status": "todo"}, now=now)
-            if blocks_task_id is not None:
-                db.execute(
-                    """
-                    INSERT INTO task_dependencies(blocked_task_id, blocker_task_id)
-                    VALUES (?, ?)
-                    """,
-                    (blocks_task_id, task_id),
-                )
-                _record_event(
-                    db,
-                    blocks_task_id,
-                    "dependency_added",
-                    details={"blocker_task_id": task_id},
-                    now=now,
-                )
-            stored_paths = _save_attachments(db, task_id, uploads, now)
+            task_id = result.task_id
+            if result.created:
+                stored_paths = _save_attachments(db, task_id, uploads, now)
             db.commit()
         except Exception:
             db.rollback()
@@ -1132,7 +930,8 @@ def register_routes(app: Flask) -> None:
                 view="manage",
                 created=True,
             )
-        return jsonify(task=_serialize_task(db, _task_or_404(db, task_id))), 201
+        status_code = 201 if result.created else 200
+        return jsonify(task=_serialize_task(db, _task_or_404(db, task_id))), status_code
 
     @app.post(
         "/tasks/<int:task_id>/attachments",
@@ -1228,57 +1027,19 @@ def register_routes(app: Flask) -> None:
     @app.patch("/api/tasks/<int:task_id>")
     def update_task(task_id: int):
         body = _command_body()
-        allowed = {"title", "description", "status", "due_date"}
-        unknown = set(body) - allowed
-        if unknown:
-            raise ValueError(f"Unsupported field: {sorted(unknown)[0]}")
         db = get_db()
-        task = _task_or_404(db, task_id)
-        changes: dict[str, Any] = {}
-        if "title" in body:
-            title = str(body["title"]).strip()
-            if not title or len(title) > 200:
-                raise ValueError("Title must be between 1 and 200 characters")
-            changes["title"] = title
-        if "description" in body:
-            description = str(body["description"]).strip()
-            if len(description) > 5000:
-                raise ValueError("Description must be at most 5000 characters")
-            changes["description"] = description
-        if "status" in body:
-            status = str(body["status"])
-            if status not in STATUSES:
-                raise ValueError("Invalid status")
-            changes["status"] = status
-        if "due_date" in body:
-            changes["due_date"] = _valid_due_date(body["due_date"])
-
-        now = utc_now()
-        changed_fields = {key: value for key, value in changes.items() if value != task[key]}
-        if changed_fields:
-            new_status = changed_fields.pop("status", None)
-            if new_status is not None:
-                _change_task_status(db, task, new_status, now)
-                if new_status == "done":
-                    _resolve_active_waiting(
-                        db, task_id, now, reason="task_completed"
-                    )
-            if changed_fields:
-                assignments = ", ".join(f"{key} = ?" for key in changed_fields)
-                db.execute(
-                    f"UPDATE tasks SET {assignments}, updated_at = ? WHERE id = ?",
-                    (*changed_fields.values(), iso_utc(now), task_id),
-                )
-                _record_event(
-                    db,
-                    task_id,
-                    "task_updated",
-                    details={"fields": list(changed_fields)},
-                    now=now,
-                )
+        try:
+            result = _task_service(db).update_task(task_id, body)
             db.commit()
+        except Exception:
+            db.rollback()
+            raise
         if _is_form_request():
-            notice = "task-completed" if changes.get("status") == "done" else "task-updated"
+            notice = (
+                "task-completed"
+                if result.values.get("status") == "done"
+                else "task-updated"
+            )
             return _task_redirect(task_id, notice)
         return jsonify(task=_serialize_task(db, _task_or_404(db, task_id)))
 
@@ -1359,7 +1120,7 @@ def register_routes(app: Flask) -> None:
                 and (before_rank is None or candidate < before_rank)
             )
             if rebalanced:
-                _rebalance_task_ranks(db, new_order)
+                rebalance_task_ranks(db, new_order)
             else:
                 db.execute(
                     "UPDATE tasks SET rank_key = ? WHERE id = ?",
