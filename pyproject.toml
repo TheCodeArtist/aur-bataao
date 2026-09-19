@@ -22,4 +22,11 @@ testpaths = ["tests"]
 addopts = "-q"
 
 [tool.setuptools]
-py-modules = ["agent_store", "app", "llm_profiles", "llm_provider", "task_service"]
+py-modules = [
+  "agent_store",
+  "agent_tools",
+  "app",
+  "llm_profiles",
+  "llm_provider",
+  "task_service",
+]
