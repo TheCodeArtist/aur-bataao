@@ -68,15 +68,15 @@ export const BROWSER_COVERAGE_EXCLUSIONS = [
     reason: "The application template always renders the active-task-count element.",
   },
   {
-    pathname: "/static/app.js", name: "<anonymous>", line: 1005, excerpt: "location.assign",
+    pathname: "/static/app.js", name: "<anonymous>", line: 1024, excerpt: "location.assign",
     reason: "The stale-task navigation test asserts the reload; document teardown prevents Chromium from returning the final range count.",
   },
   {
-    pathname: "/static/app.js", name: "<anonymous>", line: 1022, excerpt: "location.reload",
+    pathname: "/static/app.js", name: "<anonymous>", line: 1041, excerpt: "location.reload",
     reason: "History reload behavior is covered; document teardown prevents Chromium from returning the final range count.",
   },
   {
-    pathname: "/static/app.js", name: "<anonymous>", line: 1236, excerpt: "location.assign",
+    pathname: "/static/app.js", name: "<anonymous>", line: 1255, excerpt: "location.assign",
     reason: "Reconciliation navigation is integration-tested; document teardown prevents Chromium from returning the final range count.",
   },
   {

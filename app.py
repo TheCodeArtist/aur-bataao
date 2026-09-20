@@ -16,6 +16,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from flask import (
     Flask,
+    abort,
     current_app,
     g,
     jsonify,
@@ -59,6 +60,7 @@ NOTICE_MESSAGES = {
     "waiting-resolved": "Waiting resolved",
     "label-added": "Label added",
     "label-removed": "Label removed",
+    "label-deleted": "Label deleted",
     "dependency-added": "Dependency added",
     "dependency-removed": "Dependency removed",
 }
@@ -976,8 +978,15 @@ def register_routes(app: Flask) -> None:
         manual_label_choices = [
             dict(label)
             for label in get_db().execute(
-                "SELECT id, name, type FROM labels "
-                "WHERE type = 'manual' ORDER BY name COLLATE NOCASE"
+                """
+                SELECT l.id, l.name, l.type, count(tl.id) AS task_count
+                FROM labels l
+                LEFT JOIN task_labels tl
+                  ON tl.label_id = l.id AND tl.removed_at IS NULL
+                WHERE l.type = 'manual'
+                GROUP BY l.id, l.name, l.type
+                ORDER BY l.name COLLATE NOCASE
+                """
             ).fetchall()
         ]
         response = make_response(
@@ -1378,6 +1387,29 @@ def register_routes(app: Flask) -> None:
             return jsonify(error="Active label not found"), 404
         if _is_form_request():
             return _task_redirect(task_id, "label-removed", expanded=True)
+        return "", 204
+
+    @app.post("/labels/<int:label_id>/delete", endpoint="delete_label_form")
+    @app.delete("/api/labels/<int:label_id>")
+    def delete_label(label_id: int):
+        db = get_db()
+        try:
+            deleted = _task_service(db).delete_unused_label(label_id)
+            if not deleted:
+                abort(404)
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+        if _is_form_request():
+            return redirect(
+                url_for(
+                    "index",
+                    view=_requested_view(),
+                    notice="label-deleted",
+                ),
+                code=303,
+            )
         return "", 204
 
     @app.post(

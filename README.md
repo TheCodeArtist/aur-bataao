@@ -10,7 +10,8 @@ browser and keeps its task data in a local SQLite database.
   follow-up at a time. Use **Kuch Aur Bataao** when you want another suggestion.
 - Manage the complete backlog in **All Tasks**, with search, state and label
   filters, overdue, stalled, and follow-up filters, plus smart or manual rank
-  ordering.
+  ordering. The label filter also provides a manager for deleting labels that
+  are no longer assigned to any task.
 - Track titles, descriptions, due dates, workflow state, labels, comments, and
   attachments. Files can be selected, dropped, or pasted from the clipboard.
 - Record task relationships. A task stays blocked until its unfinished blocker

@@ -106,6 +106,7 @@
             <label class="multi-select-option"><input type="checkbox" value="{{ label.id }}" data-filter-value checked> <span>{{ label.name }}</span></label>
             {% endfor %}
           </div>
+          <button id="open-label-manager" class="multi-select-manage" type="button">Manage labels…</button>
         </div>
       </details>
       <label class="check"><input id="overdue-filter" type="checkbox"> Overdue</label>
@@ -616,6 +617,35 @@
         <button type="submit" class="primary">Save follow-up</button>
       </div>
     </form>
+  </dialog>
+
+  <dialog id="label-manager-dialog" class="new-task-dialog label-manager-dialog" aria-labelledby="label-manager-title">
+    <div class="dialog-heading">
+      <div>
+        <h2 id="label-manager-title">Manage labels</h2>
+        <p>Labels can be deleted after they have been removed from every task.</p>
+      </div>
+      <form method="dialog">
+        <button type="submit" class="dialog-close" aria-label="Close label manager">×</button>
+      </form>
+    </div>
+    {% if manual_label_choices %}
+    <ul class="label-manager-list">
+      {% for label in manual_label_choices %}
+      <li class="label-manager-item" data-label-id="{{ label.id }}" data-task-count="{{ label.task_count }}">
+        <span class="label-manager-name">{{ label.name }}</span>
+        <span class="label-manager-usage">{{ label.task_count }} {{ 'task' if label.task_count == 1 else 'tasks' }}</span>
+        <form method="post" action="{{ url_for('delete_label_form', label_id=label.id) }}"{% if label.task_count %} hidden{% endif %}>
+          <input name="return_view" type="hidden" value="manage">
+          <button type="submit" class="link-button delete-unused-label">Delete</button>
+        </form>
+        <span class="label-manager-in-use muted"{% if not label.task_count %} hidden{% endif %}>In use</span>
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="label-manager-empty muted">No saved manual labels.</p>
+    {% endif %}
   </dialog>
   <div id="toast" role="status" aria-live="polite"></div>
 </body>

@@ -471,6 +471,13 @@ document.querySelectorAll(".inline-field-form").forEach((form) => {
 });
 
 document.addEventListener("click", async (event) => {
+  const openLabelManager = event.target.closest("#open-label-manager");
+  if (openLabelManager) {
+    labelFilter.open = false;
+    labelManagerDialog.showModal();
+    return;
+  }
+
   const toggle = event.target.closest(".toggle-details, .focus-toggle-details");
   if (toggle) {
     const row = taskRow(toggle);
@@ -656,9 +663,11 @@ document.querySelectorAll(".task-label-picker").forEach((picker) => {
           body: JSON.stringify({ name: checkbox.dataset.labelName }),
         });
         applyTask(row, result.task);
+        adjustManagedLabelUsage(checkbox.value, 1);
       } else {
         await api(`/api/tasks/${row.dataset.taskId}/labels/${checkbox.value}`, { method: "DELETE" });
         removeRenderedLabel(row, checkbox.value);
+        adjustManagedLabelUsage(checkbox.value, -1);
       }
     } catch (error) {
       checkbox.checked = !adding;
@@ -670,6 +679,16 @@ document.querySelectorAll(".task-label-picker").forEach((picker) => {
   });
 });
 
+const labelManagerDialog = document.querySelector("#label-manager-dialog");
+
+function adjustManagedLabelUsage(labelId, change) {
+  const item = labelManagerDialog.querySelector(`[data-label-id="${labelId}"]`);
+  const count = Number(item.dataset.taskCount) + change;
+  item.dataset.taskCount = count;
+  item.querySelector(".label-manager-usage").textContent = `${count} ${count === 1 ? "task" : "tasks"}`;
+  item.querySelector("form").hidden = count !== 0;
+  item.querySelector(".label-manager-in-use").hidden = count === 0;
+}
 
 const followUpDialog = document.querySelector("#follow-up-dialog");
 const followUpForm = document.querySelector("#follow-up-form");

@@ -701,6 +701,30 @@ class TaskService:
         )
         return True
 
+    def delete_unused_label(self, label_id: int) -> bool:
+        cursor = self.db.execute(
+            """
+            DELETE FROM labels
+            WHERE id = ?
+              AND type = 'manual'
+              AND NOT EXISTS (
+                  SELECT 1 FROM task_labels
+                  WHERE label_id = labels.id AND removed_at IS NULL
+              )
+            """,
+            (label_id,),
+        )
+        if cursor.rowcount:
+            return True
+        label = self.db.execute(
+            "SELECT type FROM labels WHERE id = ?", (label_id,)
+        ).fetchone()
+        if label is None:
+            return False
+        if label["type"] != "manual":
+            raise ValueError("Automatic labels cannot be deleted")
+        raise ValueError("Remove this label from every task before deleting it")
+
     def _would_create_dependency_cycle(
         self, blocked_id: int, blocker_id: int
     ) -> bool:

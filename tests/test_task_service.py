@@ -143,6 +143,33 @@ def test_service_exposes_agent_ready_task_actions(app):
         ]
 
 
+def test_service_deletes_only_unused_manual_labels(app):
+    with app.app_context():
+        db = get_db()
+        service = TaskService(db, app.config["TZINFO"])
+        task = service.create_task(title="Label owner", now=NOW)
+        label_id = service.add_label(task.task_id, "Temporary", now=NOW)
+
+        with pytest.raises(ValueError, match="every task"):
+            service.delete_unused_label(label_id)
+
+        assert service.remove_label(task.task_id, label_id, now=NOW)
+        assert service.delete_unused_label(label_id) is True
+        assert service.delete_unused_label(label_id) is False
+        assert db.execute(
+            "SELECT count(*) FROM task_labels WHERE label_id = ?", (label_id,)
+        ).fetchone()[0] == 0
+
+        db.execute(
+            "INSERT INTO labels(name, type) VALUES ('active:2099-01-01', 'active_date')"
+        )
+        automatic_id = db.execute(
+            "SELECT id FROM labels WHERE name = 'active:2099-01-01'"
+        ).fetchone()["id"]
+        with pytest.raises(ValueError, match="Automatic labels"):
+            service.delete_unused_label(automatic_id)
+
+
 def test_service_validates_tool_shaped_inputs_before_writes(app):
     with app.app_context():
         db = get_db()

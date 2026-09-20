@@ -390,6 +390,47 @@ test("adds, removes, and filters task labels without reloading", async ({ page, 
 });
 
 
+test("deletes a label after its final task assignment is removed", async ({ page, request }) => {
+  const task = await createTask(request, "Temporary label owner");
+  const labelResponse = await request.post(`/api/tasks/${task.id}/labels`, {
+    data: { name: "temporary" },
+  });
+  expect(labelResponse.status()).toBe(201);
+
+  await page.goto("/?view=manage");
+  const row = page.locator(`.task-row[data-task-id="${task.id}"]`);
+  await row.getByRole("button", { name: "Show task details" }).click();
+  await row.getByLabel("Choose existing labels for Temporary label owner").click();
+  await row.locator('[data-task-label-option][data-label-name="temporary"]').uncheck();
+
+  await page.getByLabel("Filter by label").click();
+  await page.getByRole("button", { name: "Manage labels…" }).click();
+  const dialog = page.getByRole("dialog", { name: "Manage labels" });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByText("0 tasks")).toBeVisible();
+  await dialog.getByRole("button", { name: "Close label manager" }).click();
+  await expect(dialog).toBeHidden();
+
+  await page.getByLabel("Filter by label").click();
+  await page.getByRole("button", { name: "Manage labels…" }).click();
+  await Promise.all([
+    page.waitForURL(/notice=label-deleted/),
+    dialog.getByRole("button", { name: "Delete" }).click(),
+  ]);
+  await expect(page.locator("#toast")).toContainText("Label deleted");
+
+  await row.getByRole("button", { name: "Show task details" }).click();
+  await row.getByLabel("Choose existing labels for Temporary label owner").click();
+  await expect(row.locator('[data-task-label-option][data-label-name="temporary"]')).toHaveCount(0);
+
+  await page.getByLabel("Filter by label").click();
+  await page.getByRole("button", { name: "Manage labels…" }).click();
+  await expect(page.getByRole("dialog", { name: "Manage labels" })).toContainText(
+    "No saved manual labels.",
+  );
+});
+
+
 test("edits waiting schedules and records a follow-up", async ({ page, request }) => {
   const task = await createTask(request, "Waiting workflow");
   const waiting = await request.put(`/api/tasks/${task.id}/waiting`, {

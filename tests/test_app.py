@@ -1519,6 +1519,72 @@ def test_label_picker_lists_saved_labels_and_checks_task_assignments(client):
     assert "Create or add label…" in task_markup
 
 
+def test_label_manager_reports_usage_and_deletes_an_unused_label(client, app):
+    task = create_task(client, "Plan release")
+    label = client.post(
+        f"/api/tasks/{task['id']}/labels", json={"name": "temporary"}
+    ).get_json()["task"]["labels"][0]
+
+    page = client.get("/?view=manage").get_data(as_text=True)
+    assert 'id="open-label-manager"' in page
+    assert f'data-label-id="{label["id"]}" data-task-count="1"' in page
+    assert "1 task" in page
+    assert f'action="/labels/{label["id"]}/delete" hidden' in page
+
+    in_use = client.delete(f"/api/labels/{label['id']}")
+    assert in_use.status_code == 400
+    assert in_use.get_json() == {
+        "error": "Remove this label from every task before deleting it"
+    }
+
+    assert client.delete(
+        f"/api/tasks/{task['id']}/labels/{label['id']}"
+    ).status_code == 204
+    deleted = client.post(
+        f"/labels/{label['id']}/delete",
+        data={"return_view": "manage"},
+    )
+    assert deleted.status_code == 303
+    assert deleted.headers["Location"].endswith(
+        "/?view=manage&notice=label-deleted"
+    )
+
+    redirected = client.get(deleted.headers["Location"]).get_data(as_text=True)
+    assert 'data-notice="Label deleted"' in redirected
+    assert "temporary" not in redirected
+    with app.app_context():
+        assert get_db().execute(
+            "SELECT count(*) FROM labels WHERE id = ?", (label["id"],)
+        ).fetchone()[0] == 0
+
+
+def test_delete_label_api_handles_missing_and_automatic_labels(client, app):
+    assert client.delete("/api/labels/999").status_code == 404
+
+    task = create_task(client, "API label owner")
+    label = client.post(
+        f"/api/tasks/{task['id']}/labels", json={"name": "api-unused"}
+    ).get_json()["task"]["labels"][0]
+    assert client.delete(
+        f"/api/tasks/{task['id']}/labels/{label['id']}"
+    ).status_code == 204
+    assert client.delete(f"/api/labels/{label['id']}").status_code == 204
+
+    with app.app_context():
+        db = get_db()
+        db.execute(
+            "INSERT INTO labels(name, type) VALUES ('active:2099-01-02', 'active_date')"
+        )
+        automatic_id = db.execute(
+            "SELECT id FROM labels WHERE name = 'active:2099-01-02'"
+        ).fetchone()["id"]
+        db.commit()
+
+    response = client.delete(f"/api/labels/{automatic_id}")
+    assert response.status_code == 400
+    assert response.get_json() == {"error": "Automatic labels cannot be deleted"}
+
+
 def test_create_task_with_attachment_and_remove_it(client):
     image_bytes = b"fake-png-content"
     response = client.post(
