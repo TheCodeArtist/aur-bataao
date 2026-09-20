@@ -1026,17 +1026,23 @@ def test_python_launcher_owns_and_cleans_up_server():
     assert "wasyncore.close_all" in launcher
 
 
-def test_waitress_queue_log_explains_small_backlogs(caplog):
+@pytest.mark.parametrize(
+    ("depth", "expected"),
+    [
+        (1, "1 request waiting for a server worker; no action needed unless frequent or growing"),
+        (2, "2 requests waiting for a server worker; no action needed unless frequent or growing"),
+    ],
+)
+def test_waitress_queue_log_explains_small_backlogs(caplog, depth, expected):
     logger = logging.getLogger("test.waitress.queue.small")
     logger.addFilter(start.WaitressQueueLogFilter())
 
     with caplog.at_level(logging.INFO, logger=logger.name):
-        logger.warning("Task queue depth is %d", 1)
+        logger.warning("Task queue depth is %d", depth)
 
     record = caplog.records[-1]
     assert record.levelname == "INFO"
-    assert "Normal traffic burst" in record.getMessage()
-    assert "no action needed unless this repeats or grows" in record.getMessage()
+    assert record.getMessage() == expected
 
 
 def test_waitress_queue_log_keeps_large_backlogs_actionable(caplog):

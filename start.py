@@ -50,8 +50,8 @@ class WaitressQueueLogFilter(logging.Filter):
             record.levelno = logging.INFO
             record.levelname = "INFO"
             record.msg = (
-                "Normal traffic burst: %d request%s briefly waiting for a server "
-                "worker; no action needed unless this repeats or grows"
+                "%d request%s waiting for a server worker; "
+                "no action needed unless frequent or growing"
             )
             record.args = (depth, "" if depth == 1 else "s")
         else:
