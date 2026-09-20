@@ -11,9 +11,20 @@ elif command -v python >/dev/null 2>&1; then
     python_command=python
 else
     printf '%s\n' \
-        'Python is required to validate staged files.' \
+        'Python is required to validate staged files and run tests.' \
         'Create the project virtual environment before committing.' >&2
     exit 1
 fi
 
-exec "$python_command" .githooks/validate-staged.py
+"$python_command" .githooks/validate-staged.py || exit $?
+
+if ! command -v npm >/dev/null 2>&1; then
+    printf '%s\n' \
+        'Node.js and npm are required to run JavaScript unit tests before committing.' \
+        'Install Node.js 20.19 or newer and run npm ci.' >&2
+    exit 1
+fi
+
+printf '%s\n' 'Running commit-time behavioral checks...'
+"$python_command" -m pytest || exit $?
+npm run test:unit

@@ -7,7 +7,8 @@
   },
   "scripts": {
     "test": "npm run test:unit && npm run test:e2e:coverage",
-    "test:unit": "node --test --experimental-test-coverage --test-coverage-include=static/markdown.js --test-coverage-include=static/http.js --test-coverage-include=static/task_logic.js --test-coverage-include=static/agent_logic.js --test-coverage-include=tests-e2e/browser_coverage.js --test-coverage-lines=100 --test-coverage-branches=100 --test-coverage-functions=100 tests-js/*.test.js",
+    "test:unit": "node scripts/run-js-unit-tests.mjs",
+    "test:unit:watch": "node --test --watch tests-js/*.test.js",
     "test:e2e": "playwright test",
     "test:e2e:coverage": "playwright test"
   },

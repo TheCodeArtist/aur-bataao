@@ -16,9 +16,6 @@ else
     exit 1
 fi
 
-printf '%s\n' 'Running test suite before push...'
-"$python_command" -m pytest --cov --cov-report=term-missing || exit $?
-
 if ! command -v npm >/dev/null 2>&1; then
     printf '%s\n' \
         'Node.js and npm are required to run the browser-logic tests before pushing.' \
@@ -26,4 +23,6 @@ if ! command -v npm >/dev/null 2>&1; then
     exit 1
 fi
 
+printf '%s\n' 'Running test suite before push...'
+"$python_command" -m pytest --cov --cov-report=term-missing || exit $?
 npm test

@@ -532,8 +532,18 @@ npm run test:unit
 ```
 
 Node's built-in test runner enforces 100% lines, branches, and functions for
-Markdown, HTTP, task decisions, agent decisions, and the browser-coverage
+Markdown, HTTP, task decisions, agent decisions, and the coverage gate and
 reporter.
+
+For immediate feedback while editing reusable JavaScript, run the non-gating
+watch command in a separate terminal:
+
+```powershell
+npm run test:unit:watch
+```
+
+The watch command deliberately omits numerical coverage so it can rerun
+quickly. `npm run test:unit`, pre-commit, pre-push, and CI remain authoritative.
 
 ### Browser tests
 
@@ -583,6 +593,10 @@ The Node gate measures lines, branches, and functions in the reusable logic,
 Markdown, HTTP, and browser-coverage modules. All three thresholds are 100%.
 Substantive decisions belong in these accountable modules rather than being
 hidden in difficult-to-measure DOM callbacks.
+
+The unit command is wrapped so a runtime warning or missing coverage report is
+a hard failure. This prevents Node from returning success after executing tests
+without actually enabling its experimental coverage collector.
 
 Playwright collects Chromium V8 coverage for `static/app.js` and
 `static/agent.js`. Its report distinguishes:
@@ -636,6 +650,24 @@ and do not introduce generated fixtures, experimental dependencies, or large
 throwaway scaffolds without a clear need. CI and pre-push should execute the
 same authoritative gates so local success has the same meaning as repository
 success.
+
+The repository enforces this cadence mechanically:
+
+- pre-commit runs staged-file validation, the complete Python suite without
+  coverage instrumentation, and the 100% JavaScript unit gate;
+- pre-push runs full Python statement/branch coverage and the authoritative
+  JavaScript unit plus Playwright coverage gates;
+- repository policy tests fail if thresholds, hooks, workflow commands, or the
+  pull-request review prompts drift; and
+- the pull-request template requires evidence that a regression test failed
+  before the implementation and checks meaningful postconditions afterward.
+
+Local hooks are prompt feedback, not the merge guarantee: `--no-verify` can
+bypass them. Protect `main` in the repository host, require pull requests and
+all jobs from `.github/workflows/tests.yml`, require the branch to be current,
+and disallow force pushes or direct pushes. Those repository settings are the
+authoritative boundary that prevents bypassed or missing local checks from
+entering `main`.
 
 ## Debugging and troubleshooting
 
@@ -711,7 +743,9 @@ git config --local core.hooksPath .githooks
 The hooks are:
 
 - **pre-commit:** checks staged whitespace, conflict markers, generated/local
-  paths, files over 100 KiB, and staged Python syntax without writing bytecode.
+  paths, files over 100 KiB, and staged Python syntax without writing bytecode;
+  it then runs all Python tests without coverage instrumentation and the 100%
+  JavaScript unit gate.
 - **commit-msg:** requires a Conventional Commit type, a subject no longer than
   50 characters, a blank line before an optional body, and body lines no longer
   than 72 characters. Merge/revert and `fixup!`/`squash!` subjects are exempt
@@ -728,9 +762,10 @@ feat(tasks)!: change ranking behavior
 ```
 
 Hook scripts locate Python in `.venv/Scripts/python.exe`, then
-`.venv/bin/python`, then `python3` or `python` on `PATH`. The pre-push hook also
-requires npm dependencies and the managed Chromium build. When changing hook
-entry points on Windows, preserve executable mode for other platforms:
+`.venv/bin/python`, then `python3` or `python` on `PATH`. Both behavioral hooks
+require npm dependencies; pre-push also requires the managed Chromium build.
+When changing hook entry points on Windows, preserve executable mode for other
+platforms:
 
 ```powershell
 git add --chmod=+x .githooks/pre-commit .githooks/commit-msg .githooks/pre-push
