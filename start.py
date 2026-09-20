@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ctypes
+import logging
 import os
 import signal
 import subprocess
@@ -25,6 +26,68 @@ PID_FILE = RUNTIME_DIR / "aur-bataao.pid"
 STOP_FILE = RUNTIME_DIR / "aur-bataao.stop"
 STARTUP_TIMEOUT = 20.0
 GRACEFUL_STOP_TIMEOUT = 5.0
+LOG_FORMAT = "[%(asctime)s.%(msecs)03d] %(levelname)s: %(message)s"
+LOG_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
+
+
+def log_formatter() -> logging.Formatter:
+    return logging.Formatter(LOG_FORMAT, datefmt=LOG_DATE_FORMAT)
+
+
+class WaitressQueueLogFilter(logging.Filter):
+    """Give Waitress's queue warning user-facing context."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.msg != "Task queue depth is %d" or not record.args:
+            return True
+
+        try:
+            depth = int(record.args[0])
+        except (TypeError, ValueError):
+            return True
+
+        if depth <= 2:
+            record.levelno = logging.INFO
+            record.levelname = "INFO"
+            record.msg = (
+                "Normal traffic burst: %d request%s briefly waiting for a server "
+                "worker; no action needed unless this repeats or grows"
+            )
+            record.args = (depth, "" if depth == 1 else "s")
+        else:
+            record.msg = (
+                "Server request backlog: %d requests waiting for workers; "
+                "investigate if this persists or keeps growing"
+            )
+            record.args = (depth,)
+        return True
+
+
+def configure_logging() -> None:
+    """Timestamp application logs and clarify Waitress queue messages."""
+    root_logger = logging.getLogger()
+    if root_logger.handlers:
+        for root_handler in root_logger.handlers:
+            root_handler.setFormatter(log_formatter())
+    else:
+        root_handler = logging.StreamHandler()
+        root_handler.setFormatter(log_formatter())
+        root_logger.addHandler(root_handler)
+
+    queue_logger = logging.getLogger("waitress.queue")
+    if any(
+        getattr(handler, "_aur_bataao_queue_handler", False)
+        for handler in queue_logger.handlers
+    ):
+        return
+
+    handler = logging.StreamHandler()
+    handler._aur_bataao_queue_handler = True  # type: ignore[attr-defined]
+    handler.setLevel(logging.INFO)
+    handler.setFormatter(log_formatter())
+    handler.addFilter(WaitressQueueLogFilter())
+    queue_logger.addHandler(handler)
+    queue_logger.propagate = False
 
 
 class AlreadyRunningError(RuntimeError):
@@ -501,6 +564,7 @@ def _worker_main() -> int:
     except ValueError:
         return 2
 
+    configure_logging()
     try:
         server = create_server(create_app(), host=host, port=port, threads=4)
     except OSError as exc:

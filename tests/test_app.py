@@ -1,3 +1,4 @@
+import logging
 import sqlite3
 import re
 from datetime import datetime, timezone
@@ -1023,6 +1024,51 @@ def test_python_launcher_owns_and_cleans_up_server():
     assert 'sys.argv[1:] == ["--stop"]' in launcher
     assert "server.task_dispatcher.shutdown" in launcher
     assert "wasyncore.close_all" in launcher
+
+
+def test_waitress_queue_log_explains_small_backlogs(caplog):
+    logger = logging.getLogger("test.waitress.queue.small")
+    logger.addFilter(start.WaitressQueueLogFilter())
+
+    with caplog.at_level(logging.INFO, logger=logger.name):
+        logger.warning("Task queue depth is %d", 1)
+
+    record = caplog.records[-1]
+    assert record.levelname == "INFO"
+    assert "Normal traffic burst" in record.getMessage()
+    assert "no action needed unless this repeats or grows" in record.getMessage()
+
+
+def test_waitress_queue_log_keeps_large_backlogs_actionable(caplog):
+    logger = logging.getLogger("test.waitress.queue.large")
+    logger.addFilter(start.WaitressQueueLogFilter())
+
+    with caplog.at_level(logging.INFO, logger=logger.name):
+        logger.warning("Task queue depth is %d", 5)
+
+    record = caplog.records[-1]
+    assert record.levelname == "WARNING"
+    assert "Server request backlog: 5 requests" in record.getMessage()
+    assert "investigate if this persists" in record.getMessage()
+
+
+def test_log_formatter_always_prefixes_timestamp_with_milliseconds():
+    record = logging.LogRecord(
+        "aur-bataao.test",
+        logging.INFO,
+        __file__,
+        1,
+        "Server ready",
+        (),
+        None,
+    )
+
+    output = start.log_formatter().format(record)
+
+    assert re.fullmatch(
+        r"\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3}\] INFO: Server ready",
+        output,
+    )
 
 
 @pytest.mark.parametrize("answer", ["y", "Y", "yes", "YES"])
