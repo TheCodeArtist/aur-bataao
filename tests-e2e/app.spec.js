@@ -287,6 +287,24 @@ test("organizes conversations and persists agent width", async ({ page }) => {
     }).getByRole("button", { name: "Organize this conversation", exact: true }),
   ).toBeVisible();
 
+  const planningGroup = page.locator('.session-group[data-folder-key^="folder-"]').filter({
+    has: page.getByRole("heading", { name: "Planning" }),
+  });
+  await planningGroup.getByRole("button", { name: "Collapse folder Planning" }).click();
+  await expect(planningGroup.locator(".session-group-items")).toBeHidden();
+  await expect(planningGroup.getByRole("button", { name: "Expand folder Planning" })).toHaveAttribute(
+    "aria-expanded", "false",
+  );
+  await page.reload();
+  const reloadedPlanningGroup = page.locator('.session-group[data-folder-key^="folder-"]').filter({
+    has: page.getByRole("heading", { name: "Planning" }),
+  });
+  await expect(reloadedPlanningGroup.locator(".session-group-items")).toBeHidden();
+  await reloadedPlanningGroup.getByRole("button", { name: "Expand folder Planning" }).click();
+  await expect(reloadedPlanningGroup.getByRole("button", {
+    name: "Organize this conversation", exact: true,
+  })).toBeVisible();
+
   const width = page.locator("#width-toggle");
   await width.click();
   await expect(width).toHaveAttribute("aria-checked", "true");

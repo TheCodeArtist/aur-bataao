@@ -48,8 +48,14 @@ body.agent-mode .agent-workspace { flex: 1 1 auto; }
 .session-list-heading .quiet-button { padding: 3px 5px; font-size: 0.72rem; }
 .session-list { display: grid; gap: 10px; }
 .session-group { display: grid; min-width: 0; gap: 2px; }
-.session-group-heading { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: 6px; padding: 0 5px; }
-.agent-sidebar .session-group-heading h3 { min-width: 0; margin: 0; overflow: hidden; color: var(--muted); font-size: 0.72rem; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+.session-group-heading { display: flex; min-width: 0; align-items: center; gap: 3px; padding: 0 3px; }
+.agent-sidebar .session-group-heading h3 { min-width: 0; margin: 0 auto 0 0; overflow: hidden; color: var(--muted); font-size: 0.72rem; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+.folder-toggle-button { display: grid; width: 24px; min-height: 24px; padding: 3px; place-items: center; flex: 0 0 auto; border-color: transparent; color: var(--muted); background: transparent; }
+.folder-toggle-button svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; transition: transform 120ms ease; }
+.folder-toggle-button[aria-expanded="false"] svg { transform: rotate(-90deg); }
+.folder-toggle-button:hover { color: var(--text); border-color: transparent; background: var(--surface-hover); }
+.session-group-items { display: grid; min-width: 0; gap: 2px; }
+.session-group-items[hidden] { display: none; }
 .folder-delete-button { padding: 2px 4px; border-color: transparent; color: var(--muted); background: transparent; font-size: 0.68rem; }
 .session-move-button { display: grid; width: 24px; min-height: 24px; padding: 2px; place-items: center; flex: 0 0 auto; border: 0; color: var(--muted); background: transparent; }
 .session-move-button svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
@@ -236,5 +242,5 @@ body.agent-mode .agent-workspace { flex: 1 1 auto; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .agent-width-toggle, .conversation-scroll::before, .conversation-scroll::after { transition: none; }
+  .agent-width-toggle, .folder-toggle-button svg, .conversation-scroll::before, .conversation-scroll::after { transition: none; }
 }

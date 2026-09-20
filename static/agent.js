@@ -21,7 +21,7 @@ const state = {
   profiles: [], sessions: [], folders: [], sessionId: null, busy: false,
   modelCache: new Map(), discoveryDirty: false, messageSignature: null,
   initialized: false, normalUpdate: false, warningSources: new Set(),
-  currentSession: null, movingSessionId: null,
+  currentSession: null, movingSessionId: null, collapsedFolderKeys: new Set(),
 };
 const profileForm = document.querySelector("#profile-form");
 const profileSelect = document.querySelector("#profile-select");
@@ -52,6 +52,14 @@ const agentViewLink = document.querySelector("#agent-view-link");
 let activeModelOption = -1;
 let modelRequest = 0;
 let initializePromise = null;
+const collapsedFoldersStorageKey = "aur-bataao-agent-collapsed-folders";
+
+try {
+  const savedCollapsedFolders = JSON.parse(localStorage.getItem(collapsedFoldersStorageKey) || "[]");
+  if (Array.isArray(savedCollapsedFolders)) {
+    state.collapsedFolderKeys = new Set(savedCollapsedFolders.filter((key) => typeof key === "string"));
+  }
+} catch (_) { /* unavailable or invalid */ }
 
 function updateConversationScrollShadows() {
   const overflow = messageList.scrollHeight - messageList.clientHeight;
@@ -431,14 +439,59 @@ function createSessionRow(session) {
   return row;
 }
 
+function folderGroupKey(folder) {
+  return folder ? `folder-${folder.id}` : "unfiled";
+}
+
+function persistCollapsedFolders() {
+  try {
+    localStorage.setItem(collapsedFoldersStorageKey, JSON.stringify([...state.collapsedFolderKeys]));
+  } catch (_) { /* unavailable */ }
+}
+
 function createSessionGroup(name, sessions, folder = null) {
+  const key = folderGroupKey(folder);
   const group = document.createElement("section");
   group.className = "session-group";
+  group.dataset.folderKey = key;
   const heading = document.createElement("div");
   heading.className = "session-group-heading";
+  const toggle = document.createElement("button");
+  toggle.type = "button";
+  toggle.className = "folder-toggle-button";
+  const toggleIcon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  toggleIcon.setAttribute("viewBox", "0 0 24 24");
+  toggleIcon.setAttribute("aria-hidden", "true");
+  toggleIcon.setAttribute("focusable", "false");
+  const togglePath = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  togglePath.setAttribute("d", "m7 9 5 5 5-5");
+  toggleIcon.append(togglePath);
+  toggle.append(toggleIcon);
   const label = document.createElement("h3");
+  label.id = `session-group-heading-${key}`;
   label.textContent = name;
-  heading.append(label);
+  group.setAttribute("aria-labelledby", label.id);
+  const items = document.createElement("div");
+  items.id = `session-group-items-${key}`;
+  items.className = "session-group-items";
+  items.append(...sessions.map(createSessionRow));
+  toggle.setAttribute("aria-controls", items.id);
+  const applyCollapsed = (collapsed) => {
+    group.dataset.collapsed = String(collapsed);
+    toggle.setAttribute("aria-expanded", String(!collapsed));
+    toggle.setAttribute("aria-label", `${collapsed ? "Expand" : "Collapse"} folder ${name}`);
+    toggle.title = `${collapsed ? "Expand" : "Collapse"} folder`;
+    items.hidden = collapsed;
+  };
+  applyCollapsed(state.collapsedFolderKeys.has(key));
+  toggle.addEventListener("click", () => {
+    const collapsed = toggle.getAttribute("aria-expanded") === "true";
+    if (collapsed) state.collapsedFolderKeys.add(key);
+    else state.collapsedFolderKeys.delete(key);
+    applyCollapsed(collapsed);
+    persistCollapsedFolders();
+  });
+  heading.append(toggle, label);
   if (folder) {
     const remove = document.createElement("button");
     remove.type = "button";
@@ -448,7 +501,7 @@ function createSessionGroup(name, sessions, folder = null) {
     remove.addEventListener("click", () => deleteFolder(folder));
     heading.append(remove);
   }
-  group.append(heading, ...sessions.map(createSessionRow));
+  group.append(heading, items);
   return group;
 }
 
