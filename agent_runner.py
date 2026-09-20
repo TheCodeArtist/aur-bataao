@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable
@@ -40,7 +41,7 @@ class AgentRunner:
         db: sqlite3.Connection,
         timezone_info: ZoneInfo,
         *,
-        environ: dict[str, str] | None = None,
+        environ: Mapping[str, str] | None = None,
         provider_factory: Callable[[LlmConfig], Any] = ChatCompletionsProvider,
         max_steps: int = 8,
     ) -> None:

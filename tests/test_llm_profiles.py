@@ -2,23 +2,12 @@ from datetime import datetime, timezone
 
 import pytest
 
-from app import create_app, get_db
+from app import get_db
 from llm_profiles import LlmProfileStore
 from llm_provider import LlmConfigurationError
 
 
 NOW = datetime(2026, 9, 20, 9, 30, tzinfo=timezone.utc)
-
-
-@pytest.fixture()
-def app(tmp_path):
-    return create_app(
-        {
-            "TESTING": True,
-            "DATABASE": str(tmp_path / "test.sqlite3"),
-            "USER_TIMEZONE": "Asia/Kolkata",
-        }
-    )
 
 
 def profile_values(name="Local", **overrides):

@@ -3,22 +3,11 @@ from datetime import datetime, timezone
 import pytest
 
 from agent_tools import TaskToolRegistry, ToolNotFoundError
-from app import create_app, get_db
+from app import get_db
 from task_service import TaskService
 
 
 NOW = datetime(2026, 9, 20, 10, 30, tzinfo=timezone.utc)
-
-
-@pytest.fixture()
-def app(tmp_path):
-    return create_app(
-        {
-            "TESTING": True,
-            "DATABASE": str(tmp_path / "test.sqlite3"),
-            "USER_TIMEZONE": "Asia/Kolkata",
-        }
-    )
 
 
 def test_registry_exposes_unique_openai_function_tools_and_approval_policy(app):

@@ -128,10 +128,20 @@ Backups should include both the SQLite database and the attachments directory.
 ## Development
 
 ```powershell
-.\.venv\Scripts\Activate.ps1
+.\.venv\Scripts\python.exe -m pip install -e ".[test]"
+npm ci
 git config --local core.hooksPath .githooks
-pytest --basetemp=.pytest-tmp
+.\.venv\Scripts\python.exe -m pytest --cov --cov-report=term-missing
+npm test
 ```
+
+Python coverage includes statement and branch coverage across the application
+and fails below 95%. JavaScript coverage uses Node's built-in test runner and
+fails below 95% for lines, branches, or functions in the standalone Markdown
+renderer. The DOM-heavy controllers stay outside the numerical JavaScript gate;
+their server contracts are covered by Flask integration tests. Extract reusable
+logic into importable modules before adding it to the gate, and add a small real-
+browser smoke suite only when cross-browser behavior warrants that extra cost.
 
 The app initializes its schema automatically. Task-list loads reconcile active
 date labels at most once per minute, and an open browser checks for local
@@ -164,7 +174,8 @@ The hooks provide these checks:
 - **`commit-msg`:** Limits the subject to 50 characters and description lines
   to 72 characters. It requires a Conventional Commit prefix and a blank line
   before an optional description.
-- **`pre-push`:** Runs `pytest --basetemp=.pytest-tmp`.
+- **`pre-push`:** Runs branch-aware Python coverage and the JavaScript test and
+  coverage suite. The push stops if either suite fails or falls below 95%.
 
 Supported Conventional Commit types are `build`, `chore`, `ci`, `docs`, `feat`,
 `fix`, `perf`, `refactor`, `revert`, `style`, and `test`. Lowercase scopes and
@@ -183,7 +194,9 @@ The hooks look for Python in this order:
 2. `.venv/bin/python` on Linux and macOS
 3. `python3` or `python` on `PATH`
 
-Commits and pushes fail with a setup message when Python is unavailable.
+Commits and pushes fail with a setup message when Python is unavailable. Pushes
+also require Node.js 20.19 or newer, npm, and dependencies installed with
+`npm ci`.
 
 When adding or updating hook entry points on Windows, preserve their executable
 mode for other platforms:

@@ -1,0 +1,15 @@
+{
+  "name": "aur-bataao-web-tests",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20.19.0"
+  },
+  "scripts": {
+    "test": "npm run test:js",
+    "test:js": "node --test --experimental-test-coverage --test-coverage-include=static/markdown.js --test-coverage-lines=95 --test-coverage-branches=95 --test-coverage-functions=95 tests-js/markdown.test.js"
+  },
+  "devDependencies": {
+    "jsdom": "^29.1.1"
+  }
+}

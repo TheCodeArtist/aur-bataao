@@ -20,22 +20,6 @@ from app import (
 )
 
 
-@pytest.fixture()
-def app(tmp_path):
-    return create_app(
-        {
-            "TESTING": True,
-            "DATABASE": str(tmp_path / "test.sqlite3"),
-            "USER_TIMEZONE": "Asia/Kolkata",
-        }
-    )
-
-
-@pytest.fixture()
-def client(app):
-    return app.test_client()
-
-
 def create_task(client, title):
     response = client.post("/api/tasks", json={"title": title})
     assert response.status_code == 201
@@ -248,7 +232,8 @@ def test_existing_database_gets_rank_column_and_preserves_smart_order(tmp_path):
             "TESTING": True,
             "DATABASE": str(database_path),
             "USER_TIMEZONE": "Asia/Kolkata",
-        }
+        },
+        environ={},
     )
     with migrated_app.app_context():
         db = get_db()

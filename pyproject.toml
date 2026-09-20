@@ -15,11 +15,31 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-test = ["pytest>=8,<9"]
+test = [
+  "pytest>=8,<9",
+  "pytest-cov>=7,<8",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q"
+addopts = ["-q", "--strict-config", "--strict-markers"]
+xfail_strict = true
+
+[tool.coverage.run]
+branch = true
+relative_files = true
+source = ["."]
+omit = [
+  "tests/*",
+  ".venv/*",
+  ".githooks/*",
+]
+
+[tool.coverage.report]
+fail_under = 95
+precision = 2
+show_missing = true
+skip_empty = true
 
 [tool.setuptools]
 py-modules = [

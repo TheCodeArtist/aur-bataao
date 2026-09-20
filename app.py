@@ -7,6 +7,7 @@ import sqlite3
 import threading
 import time
 import uuid
+from collections.abc import Mapping
 from dataclasses import asdict
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -74,22 +75,40 @@ EMPTY_STATE_HEROES = (
 )
 
 
-def create_app(test_config: dict[str, Any] | None = None) -> Flask:
+def create_app(
+    test_config: dict[str, Any] | None = None,
+    *,
+    environ: Mapping[str, str] | None = None,
+) -> Flask:
+    environment = os.environ if environ is None else environ
     app = Flask(__name__, instance_relative_config=True)
     app.config.from_mapping(
-        DATABASE=os.getenv("AUR_BATAAO_DATABASE", str(Path(app.instance_path) / "tasks.sqlite3")),
-        USER_TIMEZONE=os.getenv("AUR_BATAAO_TIMEZONE", "Asia/Kolkata"),
-        ATTACHMENTS_DIR=os.getenv("AUR_BATAAO_ATTACHMENTS_DIR"),
+        DATABASE=environment.get(
+            "AUR_BATAAO_DATABASE", str(Path(app.instance_path) / "tasks.sqlite3")
+        ),
+        USER_TIMEZONE=environment.get("AUR_BATAAO_TIMEZONE", "Asia/Kolkata"),
+        ATTACHMENTS_DIR=environment.get("AUR_BATAAO_ATTACHMENTS_DIR"),
         MAX_ATTACHMENT_BYTES=10 * 1024 * 1024,
         MAX_ATTACHMENTS_PER_TASK=20,
         MAX_CONTENT_LENGTH=25 * 1024 * 1024,
-        LLM_BASE_URL=os.getenv("AUR_BATAAO_LLM_BASE_URL", "http://127.0.0.1:1234/v1"),
-        LLM_MODEL=os.getenv("AUR_BATAAO_LLM_MODEL", ""),
-        LLM_API_KEY_ENV=os.getenv("AUR_BATAAO_LLM_API_KEY_ENV")
-        or ("AUR_BATAAO_LLM_API_KEY" if os.getenv("AUR_BATAAO_LLM_API_KEY") else None),
-        LLM_TIMEOUT_SECONDS=_environment_number("AUR_BATAAO_LLM_TIMEOUT_SECONDS", 60),
-        LLM_SUPPORTS_TOOLS=os.getenv("AUR_BATAAO_LLM_SUPPORTS_TOOLS", "1") != "0",
-        AGENT_MAX_STEPS=_environment_integer("AUR_BATAAO_AGENT_MAX_STEPS", 8),
+        LLM_BASE_URL=environment.get(
+            "AUR_BATAAO_LLM_BASE_URL", "http://127.0.0.1:1234/v1"
+        ),
+        LLM_MODEL=environment.get("AUR_BATAAO_LLM_MODEL", ""),
+        LLM_API_KEY_ENV=environment.get("AUR_BATAAO_LLM_API_KEY_ENV")
+        or (
+            "AUR_BATAAO_LLM_API_KEY"
+            if environment.get("AUR_BATAAO_LLM_API_KEY")
+            else None
+        ),
+        LLM_TIMEOUT_SECONDS=_environment_number(
+            environment, "AUR_BATAAO_LLM_TIMEOUT_SECONDS", 60
+        ),
+        LLM_SUPPORTS_TOOLS=environment.get("AUR_BATAAO_LLM_SUPPORTS_TOOLS", "1")
+        != "0",
+        AGENT_MAX_STEPS=_environment_integer(
+            environment, "AUR_BATAAO_AGENT_MAX_STEPS", 8
+        ),
     )
     if test_config:
         app.config.update(test_config)
@@ -108,6 +127,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     app.extensions["reconcile_lock"] = threading.Lock()
     app.extensions["last_reconcile_monotonic"] = 0.0
     app.extensions["llm_provider_factory"] = ChatCompletionsProvider
+    app.extensions["environment"] = environment
 
     app.teardown_appcontext(close_db)
     register_routes(app)
@@ -122,8 +142,10 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     return app
 
 
-def _environment_number(name: str, default: float) -> float:
-    value = os.getenv(name)
+def _environment_number(
+    environment: Mapping[str, str], name: str, default: float
+) -> float:
+    value = environment.get(name)
     if value is None:
         return default
     try:
@@ -132,8 +154,10 @@ def _environment_number(name: str, default: float) -> float:
         raise RuntimeError(f"{name} must be a number") from exc
 
 
-def _environment_integer(name: str, default: int) -> int:
-    value = os.getenv(name)
+def _environment_integer(
+    environment: Mapping[str, str], name: str, default: int
+) -> int:
+    value = environment.get(name)
     if value is None:
         return default
     try:
@@ -177,7 +201,7 @@ def seed_default_llm_profile() -> None:
     if not model:
         return
     db = get_db()
-    store = LlmProfileStore(db)
+    store = _llm_profile_store(db)
     if store.list():
         return
     store.create(
@@ -370,6 +394,14 @@ def local_today() -> date:
 
 def _task_service(db: sqlite3.Connection) -> TaskService:
     return TaskService(db, current_app.config["TZINFO"])
+
+
+def _llm_profile_store(db: sqlite3.Connection) -> LlmProfileStore:
+    return LlmProfileStore(db, environ=current_app.extensions["environment"])
+
+
+def _public_llm_profile(profile) -> dict[str, Any]:
+    return profile.public_dict(current_app.extensions["environment"])
 
 
 def _attach_active_label(
@@ -852,6 +884,7 @@ def _agent_runner(db: sqlite3.Connection) -> AgentRunner:
     return AgentRunner(
         db,
         current_app.config["TZINFO"],
+        environ=current_app.extensions["environment"],
         provider_factory=current_app.extensions["llm_provider_factory"],
         max_steps=current_app.config["AGENT_MAX_STEPS"],
     )
@@ -1419,8 +1452,8 @@ def register_routes(app: Flask) -> None:
 
     @app.get("/api/llm-profiles")
     def list_llm_profiles():
-        profiles = LlmProfileStore(get_db()).list()
-        return jsonify(profiles=[profile.public_dict() for profile in profiles])
+        profiles = _llm_profile_store(get_db()).list()
+        return jsonify(profiles=[_public_llm_profile(profile) for profile in profiles])
 
     @app.post("/api/llm-profiles")
     def create_llm_profile():
@@ -1430,14 +1463,14 @@ def register_routes(app: Flask) -> None:
             raise ValueError("is_default must be a boolean")
         db = get_db()
         try:
-            profile = LlmProfileStore(db).create(
+            profile = _llm_profile_store(db).create(
                 body, make_default=make_default
             )
             db.commit()
         except Exception:
             db.rollback()
             raise
-        return jsonify(profile=profile.public_dict()), 201
+        return jsonify(profile=_public_llm_profile(profile)), 201
 
     @app.patch("/api/llm-profiles/<int:profile_id>")
     def update_llm_profile(profile_id: int):
@@ -1447,18 +1480,18 @@ def register_routes(app: Flask) -> None:
             raise ValueError("is_default must be a boolean")
         db = get_db()
         try:
-            profile = LlmProfileStore(db).update(
+            profile = _llm_profile_store(db).update(
                 profile_id, body, make_default=make_default
             )
             db.commit()
         except Exception:
             db.rollback()
             raise
-        return jsonify(profile=profile.public_dict())
+        return jsonify(profile=_public_llm_profile(profile))
 
     @app.get("/api/llm-profiles/<int:profile_id>/models")
     def list_llm_models(profile_id: int):
-        store = LlmProfileStore(get_db())
+        store = _llm_profile_store(get_db())
         config = store.provider_config(profile_id)
         provider = current_app.extensions["llm_provider_factory"](config)
         try:
@@ -1511,7 +1544,7 @@ def register_routes(app: Flask) -> None:
         if unknown:
             raise ValueError(f"Unsupported field: {sorted(unknown)[0]}")
         db = get_db()
-        profile_store = LlmProfileStore(db)
+        profile_store = _llm_profile_store(db)
         profile_id = (
             profile_store.get().id
             if body.get("profile_id") is None

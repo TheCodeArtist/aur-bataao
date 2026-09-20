@@ -17,4 +17,13 @@ else
 fi
 
 printf '%s\n' 'Running test suite before push...'
-exec "$python_command" -m pytest --basetemp=.pytest-tmp
+"$python_command" -m pytest --cov --cov-report=term-missing || exit $?
+
+if ! command -v npm >/dev/null 2>&1; then
+    printf '%s\n' \
+        'Node.js and npm are required to run the browser-logic tests before pushing.' \
+        'Install Node.js 20.19 or newer and run npm ci.' >&2
+    exit 1
+fi
+
+npm test

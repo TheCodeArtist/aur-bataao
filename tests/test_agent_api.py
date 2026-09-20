@@ -1,7 +1,5 @@
 from pathlib import Path
 
-import pytest
-
 from app import create_app, get_db
 from llm_provider import CompletionResult, CompletionToolCall
 
@@ -29,23 +27,6 @@ def completion(content=None, *, calls=()):
         model="fake-model",
         usage={},
     )
-
-
-@pytest.fixture()
-def app(tmp_path):
-    return create_app(
-        {
-            "TESTING": True,
-            "DATABASE": str(tmp_path / "test.sqlite3"),
-            "USER_TIMEZONE": "Asia/Kolkata",
-            "LLM_MODEL": "",
-        }
-    )
-
-
-@pytest.fixture()
-def client(app):
-    return app.test_client()
 
 
 def create_profile(client, **overrides):
@@ -164,7 +145,8 @@ def test_environment_configuration_seeds_first_profile(tmp_path):
             "LLM_BASE_URL": "https://llm.example.test/v1",
             "LLM_MODEL": "configured-model",
             "LLM_API_KEY_ENV": "CONFIGURED_LLM_KEY",
-        }
+        },
+        environ={},
     )
 
     response = app.test_client().get("/api/llm-profiles")

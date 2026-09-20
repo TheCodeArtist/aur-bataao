@@ -2,22 +2,11 @@ from datetime import datetime, timezone
 
 import pytest
 
-from app import create_app, get_db
+from app import get_db
 from task_service import TaskNotFoundError, TaskService
 
 
 NOW = datetime(2026, 9, 20, 8, 30, tzinfo=timezone.utc)
-
-
-@pytest.fixture()
-def app(tmp_path):
-    return create_app(
-        {
-            "TESTING": True,
-            "DATABASE": str(tmp_path / "test.sqlite3"),
-            "USER_TIMEZONE": "Asia/Kolkata",
-        }
-    )
 
 
 def test_service_create_and_update_use_the_task_domain(app):

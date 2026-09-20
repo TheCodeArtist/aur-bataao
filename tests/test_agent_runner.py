@@ -6,7 +6,7 @@ import pytest
 
 from agent_runner import AgentRunner
 from agent_store import AgentStore
-from app import create_app, get_db
+from app import get_db
 from llm_profiles import LlmProfileStore
 from llm_provider import CompletionResult, CompletionToolCall
 from task_service import TaskService
@@ -37,14 +37,8 @@ def completion(content=None, *, calls=(), usage=None):
 
 
 @pytest.fixture()
-def app(tmp_path):
-    app = create_app(
-        {
-            "TESTING": True,
-            "DATABASE": str(tmp_path / "test.sqlite3"),
-            "USER_TIMEZONE": "Asia/Kolkata",
-        }
-    )
+def app(app_factory):
+    app = app_factory()
     with app.app_context():
         LlmProfileStore(get_db(), environ={}).create(
             {

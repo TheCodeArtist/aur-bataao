@@ -12,14 +12,8 @@ NOW = datetime(2026, 9, 20, 10, 0, tzinfo=timezone.utc)
 
 
 @pytest.fixture()
-def app(tmp_path):
-    app = create_app(
-        {
-            "TESTING": True,
-            "DATABASE": str(tmp_path / "test.sqlite3"),
-            "USER_TIMEZONE": "Asia/Kolkata",
-        }
-    )
+def app(app_factory):
+    app = app_factory()
     with app.app_context():
         LlmProfileStore(get_db()).create(
             {
@@ -172,7 +166,8 @@ def test_legacy_archived_sessions_migrate_to_archived_folder(tmp_path):
             "DATABASE": str(database),
             "USER_TIMEZONE": "Asia/Kolkata",
             "LLM_MODEL": "",
-        }
+        },
+        environ={},
     )
     with migrated_app.app_context():
         row = get_db().execute(
@@ -194,7 +189,8 @@ def test_application_restart_marks_running_run_as_failed(tmp_path):
             "DATABASE": str(database),
             "USER_TIMEZONE": "Asia/Kolkata",
             "LLM_MODEL": "",
-        }
+        },
+        environ={},
     )
     with first_app.app_context():
         db = get_db()
@@ -216,7 +212,8 @@ def test_application_restart_marks_running_run_as_failed(tmp_path):
             "DATABASE": str(database),
             "USER_TIMEZONE": "Asia/Kolkata",
             "LLM_MODEL": "",
-        }
+        },
+        environ={},
     )
     with restarted_app.app_context():
         recovered = AgentStore(get_db()).run(run.id)
