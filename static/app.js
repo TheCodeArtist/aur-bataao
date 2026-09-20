@@ -1,3 +1,16 @@
+import { requestJson as api } from "./http.js";
+import {
+  compareRank,
+  compareSmart,
+  formatFileSize,
+  mergeVisibleOrder,
+  pendingFollowUpBecameDue as hasPendingFollowUpBecomeDue,
+  rankNeighbors,
+  sameTaskOrder,
+  uploadFilename,
+  validateAttachments,
+} from "./task_logic.js";
+
 const toast = document.querySelector("#toast");
 const taskWorkspace = document.querySelector("#task-workspace");
 const agentWorkspace = document.querySelector("#agent-workspace");
@@ -56,31 +69,8 @@ function notify(message, error = false) {
   toastTimer = setTimeout(() => { toast.className = ""; }, 2600);
 }
 
-async function api(url, options = {}) {
-  const headers = new Headers(options.headers || {});
-  if (options.body && !(options.body instanceof FormData) && !headers.has("Content-Type")) {
-    headers.set("Content-Type", "application/json");
-  }
-  const response = await fetch(url, {
-    ...options,
-    headers,
-  });
-  if (!response.ok) {
-    let message = `Request failed (${response.status})`;
-    try { message = (await response.json()).error || message; } catch (_) { /* no JSON */ }
-    throw new Error(message);
-  }
-  return response.status === 204 ? null : response.json();
-}
-
 function taskRow(element) {
   return element.closest(".task-row");
-}
-
-function formatFileSize(byteSize) {
-  if (byteSize < 1024) return `${byteSize} B`;
-  if (byteSize < 1024 * 1024) return `${(byteSize / 1024).toFixed(1)} KB`;
-  return `${(byteSize / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 function clipboardFiles(event) {
@@ -90,32 +80,14 @@ function clipboardFiles(event) {
     .filter(Boolean);
 }
 
-function uploadFilename(file, index) {
-  if (file.name) return file.name;
-  const extension = {
-    "image/gif": ".gif",
-    "image/jpeg": ".jpg",
-    "image/png": ".png",
-    "image/webp": ".webp",
-  }[file.type] || "";
-  return `clipboard-${Date.now()}-${index + 1}${extension}`;
-}
-
 function attachmentError(files, existingCount = 0, pendingFiles = []) {
-  const emptyFile = files.find((file) => file.size === 0);
-  if (emptyFile) return `${emptyFile.name || "An attachment"} is empty`;
-  const oversizedFile = files.find((file) => file.size > maxAttachmentBytes);
-  if (oversizedFile) {
-    return `${oversizedFile.name || "An attachment"} is larger than ${formatFileSize(maxAttachmentBytes)}`;
-  }
-  if (existingCount + pendingFiles.length + files.length > maxAttachmentsPerTask) {
-    return `A task can have at most ${maxAttachmentsPerTask} attachments`;
-  }
-  const uploadSize = [...pendingFiles, ...files].reduce((total, file) => total + file.size, 0);
-  if (uploadSize >= maxUploadBytes) {
-    return `Attach fewer files at once (combined limit ${formatFileSize(maxUploadBytes)})`;
-  }
-  return "";
+  return validateAttachments(files, {
+    existingCount,
+    pendingFiles,
+    maxAttachmentBytes,
+    maxAttachmentsPerTask,
+    maxUploadBytes,
+  });
 }
 
 function bindDropzone(zone, onFiles) {
@@ -883,11 +855,6 @@ function applyFilters() {
 const taskList = document.querySelector("#task-list");
 const sortControl = document.querySelector("#sort-control");
 const taskSortStorageKey = "aur-bataao-task-sort";
-function smartStateOrder(row) {
-  if (row.dataset.status === "done") return 3;
-  if (row.dataset.blocked === "true") return 1;
-  return row.dataset.status === "in_progress" ? 0 : 2;
-}
 let reorderInFlight = false;
 let dragState = null;
 
@@ -899,33 +866,6 @@ function renderTaskOrder(rows) {
   const anchor = [...taskList.children]
     .find((child) => !child.classList.contains("task-row")) || null;
   rows.forEach((row) => taskList.insertBefore(row, anchor));
-}
-
-function compareRank(first, second) {
-  const firstRank = BigInt(first.dataset.rankKey);
-  const secondRank = BigInt(second.dataset.rankKey);
-  if (firstRank < secondRank) return -1;
-  if (firstRank > secondRank) return 1;
-  return Number(first.dataset.taskId) - Number(second.dataset.taskId);
-}
-
-function compareSmart(first, second) {
-  const followUpDifference = Number(second.dataset.followUpDue === "true")
-    - Number(first.dataset.followUpDue === "true");
-  if (followUpDifference) return followUpDifference;
-  if (first.dataset.followUpDue === "true" && second.dataset.followUpDue === "true") {
-    const followUpDateDifference = first.dataset.followUpDate.localeCompare(second.dataset.followUpDate);
-    if (followUpDateDifference) return followUpDateDifference;
-    const followUpTimeDifference = first.dataset.followUpTime.localeCompare(second.dataset.followUpTime);
-    if (followUpTimeDifference) return followUpTimeDifference;
-  }
-  const statusDifference = smartStateOrder(first) - smartStateOrder(second);
-  if (statusDifference) return statusDifference;
-  const firstDueDate = first.dataset.dueDate || "9999-12-31";
-  const secondDueDate = second.dataset.dueDate || "9999-12-31";
-  const dueDateDifference = firstDueDate.localeCompare(secondDueDate);
-  if (dueDateDifference) return dueDateDifference;
-  return Number(second.dataset.taskId) - Number(first.dataset.taskId);
 }
 
 let focusTaskId = document.querySelector(".task-row.is-focus-task")?.dataset.taskId || "";
@@ -1142,23 +1082,9 @@ function setReorderInFlight(value) {
   updateRankPresentation();
 }
 
-function sameTaskOrder(first, second) {
-  return first.length === second.length
-    && first.every((row, index) => row === second[index]);
-}
-
-function mergeVisibleOrder(snapshot, visibleOrder) {
-  let visibleIndex = 0;
-  return snapshot.map((row) => (row.hidden ? row : visibleOrder[visibleIndex++]));
-}
-
 async function persistRankMove(row, previousOrder) {
   const orderedRows = taskRows();
-  const position = orderedRows.indexOf(row);
-  const afterTaskId = position > 0 ? Number(orderedRows[position - 1].dataset.taskId) : null;
-  const beforeTaskId = position < orderedRows.length - 1
-    ? Number(orderedRows[position + 1].dataset.taskId)
-    : null;
+  const { afterTaskId, beforeTaskId } = rankNeighbors(orderedRows, row);
   setReorderInFlight(true);
   try {
     const result = await api(`/api/tasks/${row.dataset.taskId}/rank`, {
@@ -1289,14 +1215,7 @@ function dateTimeInConfiguredTimezone() {
 }
 
 function pendingFollowUpBecameDue(localDateTime) {
-  const currentMinute = `${localDateTime.date}T${localDateTime.minute}`;
-  return taskRows().some((row) => (
-    row.dataset.status !== "done"
-    && Boolean(row.dataset.waitingOn)
-    && row.dataset.followUpDue !== "true"
-    && row.dataset.followUpDate
-    && `${row.dataset.followUpDate}T${row.dataset.followUpTime}` <= currentMinute
-  ));
+  return hasPendingFollowUpBecomeDue(taskRows(), localDateTime);
 }
 setInterval(async () => {
   const localDateTime = dateTimeInConfiguredTimezone();

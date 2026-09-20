@@ -1,4 +1,10 @@
 import { renderMarkdown } from "./markdown.js";
+import {
+  absoluteTimestamp,
+  conversationTimestamp,
+  formattedToolValue,
+} from "./agent_logic.js";
+import { requestJson as api } from "./http.js";
 
 const state = {
   profiles: [], sessions: [], folders: [], sessionId: null, busy: false,
@@ -102,15 +108,6 @@ applyFullWidth(savedFullWidth);
 widthToggle.addEventListener("click", () => {
   applyFullWidth(agentLayout.dataset.width !== "full", true);
 });
-
-async function api(url, options = {}) {
-  const headers = new Headers(options.headers || {});
-  if (options.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
-  const response = await fetch(url, { ...options, headers });
-  const body = response.status === 204 ? null : await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(body?.error || `Request failed (${response.status})`);
-  return body;
-}
 
 function notify(message, error = false) {
   window.dispatchEvent(new CustomEvent("app:notify", { detail: { message, error } }));
@@ -481,34 +478,6 @@ async function loadSessions() {
   renderSessions();
 }
 
-function parseTimestamp(value) {
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? null : date;
-}
-
-function absoluteTimestamp(value) {
-  const date = parseTimestamp(value);
-  if (!date) return "Time unavailable";
-  return new Intl.DateTimeFormat(undefined, {
-    dateStyle: "medium", timeStyle: "short",
-  }).format(date);
-}
-
-function conversationTimestamp(value) {
-  const date = parseTimestamp(value);
-  if (!date) return "";
-  const now = new Date();
-  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const day = new Date(date.getFullYear(), date.getMonth(), date.getDate());
-  const daysAgo = Math.round((today - day) / 86400000);
-  const clock = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(date);
-  if (daysAgo === 0) return `Today, ${clock}`;
-  if (daysAgo === 1) return `Yesterday, ${clock}`;
-  return new Intl.DateTimeFormat(undefined, {
-    month: "short", day: "numeric", ...(date.getFullYear() === now.getFullYear() ? {} : { year: "numeric" }),
-  }).format(date);
-}
-
 function createTimestamp(value, className = "message-timestamp") {
   const time = document.createElement("time");
   time.className = className;
@@ -530,15 +499,6 @@ function openMoveConversation(session) {
   });
   moveConversationFolder.value = session.folder_id === null ? "" : String(session.folder_id);
   moveConversationDialog.showModal();
-}
-
-function formattedToolValue(value) {
-  try {
-    const parsed = typeof value === "string" ? JSON.parse(value) : value;
-    return JSON.stringify(parsed, null, 2);
-  } catch (_) {
-    return typeof value === "string" ? value : String(value ?? "");
-  }
 }
 
 function createToolCall(call, runStatus) {
