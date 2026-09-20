@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+import sqlite3
 
 import pytest
 
@@ -56,6 +57,14 @@ def test_persists_conversation_run_snapshot_and_audit_events(app):
 
         assert store.messages(session.id) == [
             {"role": "user", "content": "What should I work on?"}
+        ]
+        assert store.message_records(session.id) == [
+            {
+                "message_id": 1,
+                "role": "user",
+                "content": "What should I work on?",
+                "created_at": NOW.isoformat(timespec="seconds"),
+            }
         ]
         assert completed.model == "local-model"
         assert completed.base_url == "http://localhost:1234/v1"
@@ -117,21 +126,64 @@ def test_approval_survives_pause_and_records_decision(app):
         ]
 
 
-def test_session_archive_and_missing_records_are_explicit(app):
+def test_sessions_can_be_moved_between_folders(app):
     with app.app_context():
         db = get_db()
         store = AgentStore(db)
         session = store.create_session(LlmProfileStore(db).get().id, now=NOW)
 
-        archived = store.archive_session(session.id, now=NOW)
-
-        assert archived.status == "archived"
-        assert store.list_sessions() == []
-        assert store.list_sessions(include_archived=True) == [archived]
-        with pytest.raises(ValueError, match="archived"):
-            store.create_run(session.id, now=NOW)
+        folder = store.create_folder("Planning", now=NOW)
+        moved = store.move_session(session.id, folder.id)
+        assert moved.folder_id == folder.id
+        assert store.list_folders() == [folder]
+        assert store.move_session(session.id, None).folder_id is None
+        store.delete_folder(folder.id)
+        assert store.list_folders() == []
         with pytest.raises(AgentNotFoundError):
             store.session("missing")
+
+
+def test_legacy_archived_sessions_migrate_to_archived_folder(tmp_path):
+    database = tmp_path / "legacy-agent.sqlite3"
+    db = sqlite3.connect(database)
+    db.execute(
+        """
+        CREATE TABLE agent_sessions (
+            id TEXT PRIMARY KEY,
+            profile_id INTEGER NOT NULL,
+            title TEXT NOT NULL,
+            status TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    timestamp = NOW.isoformat(timespec="seconds")
+    db.execute(
+        "INSERT INTO agent_sessions VALUES (?, ?, ?, ?, ?, ?)",
+        ("legacy-chat", 1, "Saved chat", "archived", timestamp, timestamp),
+    )
+    db.commit()
+    db.close()
+
+    migrated_app = create_app(
+        {
+            "TESTING": True,
+            "DATABASE": str(database),
+            "USER_TIMEZONE": "Asia/Kolkata",
+            "LLM_MODEL": "",
+        }
+    )
+    with migrated_app.app_context():
+        row = get_db().execute(
+            """
+            SELECT s.status, f.name AS folder_name
+            FROM agent_sessions s
+            JOIN agent_folders f ON f.id = s.folder_id
+            WHERE s.id = 'legacy-chat'
+            """
+        ).fetchone()
+        assert dict(row) == {"status": "active", "folder_name": "Archived"}
 
 
 def test_application_restart_marks_running_run_as_failed(tmp_path):

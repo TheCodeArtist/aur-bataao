@@ -167,6 +167,7 @@ def init_db() -> None:
     migrate_legacy_subtasks(db)
     migrate_create_request_ids(db)
     migrate_agent_run_config(db)
+    migrate_agent_folders(db)
     db.commit()
 
 
@@ -257,6 +258,34 @@ def migrate_agent_run_config(db: sqlite3.Connection) -> None:
             )
         """
     )
+
+
+def migrate_agent_folders(db: sqlite3.Connection) -> None:
+    """Add folders and retain conversations archived by earlier builds."""
+    columns = {
+        row["name"] for row in db.execute("PRAGMA table_info(agent_sessions)").fetchall()
+    }
+    if "folder_id" not in columns:
+        db.execute(
+            "ALTER TABLE agent_sessions ADD COLUMN folder_id INTEGER "
+            "REFERENCES agent_folders(id) ON DELETE SET NULL"
+        )
+    archived = db.execute(
+        "SELECT 1 FROM agent_sessions WHERE status = 'archived' LIMIT 1"
+    ).fetchone()
+    if archived is not None:
+        db.execute(
+            "INSERT OR IGNORE INTO agent_folders(name, created_at) VALUES ('Archived', ?)",
+            (datetime.now(timezone.utc).isoformat(timespec="seconds"),),
+        )
+        folder_id = db.execute(
+            "SELECT id FROM agent_folders WHERE name = 'Archived' COLLATE NOCASE"
+        ).fetchone()["id"]
+        db.execute(
+            "UPDATE agent_sessions SET folder_id = ?, status = 'active' "
+            "WHERE status = 'archived'",
+            (folder_id,),
+        )
 
 
 def _smart_ordered_task_ids(db: sqlite3.Connection) -> list[int]:
@@ -1441,11 +1470,39 @@ def register_routes(app: Flask) -> None:
 
     @app.get("/api/agent/sessions")
     def list_agent_sessions():
-        include_archived = request.args.get("include_archived") == "1"
-        sessions = AgentStore(get_db()).list_sessions(
-            include_archived=include_archived
-        )
+        sessions = AgentStore(get_db()).list_sessions()
         return jsonify(sessions=[asdict(session) for session in sessions])
+
+    @app.get("/api/agent/folders")
+    def list_agent_folders():
+        folders = AgentStore(get_db()).list_folders()
+        return jsonify(folders=[asdict(folder) for folder in folders])
+
+    @app.post("/api/agent/folders")
+    def create_agent_folder():
+        body = _json_body()
+        unknown = set(body) - {"name"}
+        if unknown:
+            raise ValueError(f"Unsupported field: {sorted(unknown)[0]}")
+        db = get_db()
+        try:
+            folder = AgentStore(db).create_folder(body.get("name"))
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+        return jsonify(folder=asdict(folder)), 201
+
+    @app.delete("/api/agent/folders/<int:folder_id>")
+    def delete_agent_folder(folder_id: int):
+        db = get_db()
+        try:
+            AgentStore(db).delete_folder(folder_id)
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+        return "", 204
 
     @app.post("/api/agent/sessions")
     def create_agent_session():
@@ -1476,9 +1533,28 @@ def register_routes(app: Flask) -> None:
         session = store.session(session_id)
         return jsonify(
             session=asdict(session),
-            messages=store.messages(session_id),
+            messages=store.message_records(session_id),
             runs=[asdict(run) for run in store.runs_for_session(session_id)],
         )
+
+    @app.patch("/api/agent/sessions/<session_id>")
+    def update_agent_session(session_id: str):
+        body = _json_body()
+        unknown = set(body) - {"folder_id"}
+        if unknown:
+            raise ValueError(f"Unsupported field: {sorted(unknown)[0]}")
+        folder_id = body.get("folder_id")
+        if folder_id is not None:
+            folder_id = _positive_id(folder_id, "folder_id")
+        db = get_db()
+        store = AgentStore(db)
+        try:
+            session = store.move_session(session_id, folder_id)
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+        return jsonify(session=asdict(session))
 
     @app.post("/api/agent/sessions/<session_id>/messages")
     def send_agent_message(session_id: str):

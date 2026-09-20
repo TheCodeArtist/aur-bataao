@@ -28,6 +28,7 @@ class AgentNotFoundError(LookupError):
 class AgentSession:
     id: str
     profile_id: int
+    folder_id: int | None
     title: str
     status: str
     created_at: str
@@ -65,6 +66,13 @@ class AgentApproval:
     decided_at: str | None
 
 
+@dataclass(frozen=True)
+class AgentFolder:
+    id: int
+    name: str
+    created_at: str
+
+
 class AgentStore:
     """Transaction-neutral persistence for agent conversations and runs."""
 
@@ -100,28 +108,54 @@ class AgentStore:
             raise AgentNotFoundError("Agent session not found")
         return _session(row)
 
-    def list_sessions(self, *, include_archived: bool = False) -> list[AgentSession]:
-        if include_archived:
-            rows = self.db.execute(
-                "SELECT * FROM agent_sessions ORDER BY updated_at DESC, id"
-            ).fetchall()
-        else:
-            rows = self.db.execute(
-                """
-                SELECT * FROM agent_sessions
-                WHERE status = 'active'
-                ORDER BY updated_at DESC, id
-                """
-            ).fetchall()
+    def list_sessions(self) -> list[AgentSession]:
+        rows = self.db.execute(
+            """
+            SELECT * FROM agent_sessions
+            WHERE status = 'active'
+            ORDER BY updated_at DESC, id
+            """
+        ).fetchall()
         return [_session(row) for row in rows]
 
-    def archive_session(
-        self, session_id: str, *, now: datetime | None = None
-    ) -> AgentSession:
+    def list_folders(self) -> list[AgentFolder]:
+        rows = self.db.execute(
+            "SELECT * FROM agent_folders ORDER BY name COLLATE NOCASE, id"
+        ).fetchall()
+        return [_folder(row) for row in rows]
+
+    def create_folder(
+        self, name: str, *, now: datetime | None = None
+    ) -> AgentFolder:
+        clean_name = _required_text(name, "Folder name", 100)
+        try:
+            cursor = self.db.execute(
+                "INSERT INTO agent_folders(name, created_at) VALUES (?, ?)",
+                (clean_name, _iso_utc(now)),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise ValueError("A folder with that name already exists") from exc
+        return self.folder(int(cursor.lastrowid))
+
+    def folder(self, folder_id: int) -> AgentFolder:
+        row = self.db.execute(
+            "SELECT * FROM agent_folders WHERE id = ?", (folder_id,)
+        ).fetchone()
+        if row is None:
+            raise AgentNotFoundError("Agent folder not found")
+        return _folder(row)
+
+    def delete_folder(self, folder_id: int) -> None:
+        self.folder(folder_id)
+        self.db.execute("DELETE FROM agent_folders WHERE id = ?", (folder_id,))
+
+    def move_session(self, session_id: str, folder_id: int | None) -> AgentSession:
         self.session(session_id)
+        if folder_id is not None:
+            self.folder(folder_id)
         self.db.execute(
-            "UPDATE agent_sessions SET status = 'archived', updated_at = ? WHERE id = ?",
-            (_iso_utc(now), session_id),
+            "UPDATE agent_sessions SET folder_id = ? WHERE id = ?",
+            (folder_id, session_id),
         )
         return self.session(session_id)
 
@@ -167,6 +201,25 @@ class AgentStore:
             (session_id,),
         ).fetchall()
         return [json.loads(row["message_json"]) for row in rows]
+
+    def message_records(self, session_id: str) -> list[dict[str, Any]]:
+        """Return provider messages enriched with persistence metadata for the UI."""
+        self.session(session_id)
+        rows = self.db.execute(
+            """
+            SELECT id, message_json, created_at FROM agent_messages
+            WHERE session_id = ? ORDER BY id
+            """,
+            (session_id,),
+        ).fetchall()
+        return [
+            {
+                **json.loads(row["message_json"]),
+                "message_id": row["id"],
+                "created_at": row["created_at"],
+            }
+            for row in rows
+        ]
 
     def create_run(
         self, session_id: str, *, now: datetime | None = None
@@ -482,10 +535,19 @@ def _session(row: sqlite3.Row) -> AgentSession:
     return AgentSession(
         id=row["id"],
         profile_id=int(row["profile_id"]),
+        folder_id=row["folder_id"],
         title=row["title"],
         status=row["status"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],
+    )
+
+
+def _folder(row: sqlite3.Row) -> AgentFolder:
+    return AgentFolder(
+        id=int(row["id"]),
+        name=row["name"],
+        created_at=row["created_at"],
     )
 
 

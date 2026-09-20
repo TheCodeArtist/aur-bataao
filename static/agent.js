@@ -1,9 +1,10 @@
 import { renderMarkdown } from "./markdown.js";
 
 const state = {
-  profiles: [], sessions: [], sessionId: null, busy: false,
+  profiles: [], sessions: [], folders: [], sessionId: null, busy: false,
   modelCache: new Map(), discoveryDirty: false, messageSignature: null,
   initialized: false, normalUpdate: false, warningSources: new Set(),
+  currentSession: null, movingSessionId: null,
 };
 const profileForm = document.querySelector("#profile-form");
 const profileSelect = document.querySelector("#profile-select");
@@ -14,7 +15,12 @@ const modelStatus = document.querySelector("#model-discovery-status");
 const discoverModelsButton = document.querySelector("#discover-models");
 const sessionList = document.querySelector("#session-list");
 const noSessions = document.querySelector("#no-sessions");
+const newFolderButton = document.querySelector("#new-folder");
+const moveConversationDialog = document.querySelector("#move-conversation-dialog");
+const moveConversationForm = document.querySelector("#move-conversation-form");
+const moveConversationFolder = document.querySelector("#move-conversation-folder");
 const messageList = document.querySelector("#message-list");
+const conversationScroll = document.querySelector(".conversation-scroll");
 const approvalList = document.querySelector("#approval-list");
 const composer = document.querySelector("#composer");
 const messageInput = document.querySelector("#message-input");
@@ -29,6 +35,21 @@ const agentViewLink = document.querySelector("#agent-view-link");
 let activeModelOption = -1;
 let modelRequest = 0;
 let initializePromise = null;
+
+function updateConversationScrollShadows() {
+  const overflow = messageList.scrollHeight - messageList.clientHeight;
+  conversationScroll.classList.toggle("has-content-above", messageList.scrollTop > 1);
+  conversationScroll.classList.toggle("has-content-below", overflow - messageList.scrollTop > 1);
+}
+
+messageList.addEventListener("scroll", updateConversationScrollShadows, { passive: true });
+messageList.addEventListener("load", updateConversationScrollShadows, true);
+messageList.addEventListener("toggle", updateConversationScrollShadows, true);
+window.addEventListener("resize", updateConversationScrollShadows);
+new ResizeObserver(updateConversationScrollShadows).observe(messageList);
+new MutationObserver(updateConversationScrollShadows).observe(messageList, {
+  childList: true, subtree: true, characterData: true,
+});
 
 function agentIsVisible() {
   return document.body.classList.contains("agent-mode");
@@ -379,24 +400,136 @@ document.addEventListener("pointerdown", (event) => {
   });
 });
 
+function createSessionRow(session) {
+  const row = document.createElement("div");
+  row.className = "session-row";
+  if (session.id === state.sessionId) row.dataset.current = "true";
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "session-button";
+  const title = document.createElement("span");
+  title.className = "session-title";
+  title.textContent = session.title;
+  button.append(title);
+  button.title = `${session.title} · ${absoluteTimestamp(session.updated_at)}`;
+  if (session.id === state.sessionId) button.setAttribute("aria-current", "page");
+  button.addEventListener("click", () => selectSession(session.id));
+
+  const meta = document.createElement("div");
+  meta.className = "session-meta";
+  meta.append(createTimestamp(session.updated_at, "session-timestamp"));
+  const moveButton = document.createElement("button");
+  moveButton.type = "button";
+  moveButton.className = "session-move-button";
+  moveButton.setAttribute("aria-label", `Move ${session.title} to a folder`);
+  moveButton.title = "Move to folder";
+  const moveIcon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  moveIcon.setAttribute("viewBox", "0 0 24 24");
+  moveIcon.setAttribute("aria-hidden", "true");
+  moveIcon.setAttribute("focusable", "false");
+  const folderPath = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  folderPath.setAttribute("d", "M3 4.5h6l2.5 3H21v13H3z");
+  const arrowPath = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  arrowPath.setAttribute("d", "M7 14h9m-3-3l3 3-3 3");
+  moveIcon.append(folderPath, arrowPath);
+  moveButton.append(moveIcon);
+  moveButton.addEventListener("click", () => openMoveConversation(session));
+  meta.append(moveButton);
+  row.append(button, meta);
+  return row;
+}
+
+function createSessionGroup(name, sessions, folder = null) {
+  const group = document.createElement("section");
+  group.className = "session-group";
+  const heading = document.createElement("div");
+  heading.className = "session-group-heading";
+  const label = document.createElement("h3");
+  label.textContent = name;
+  heading.append(label);
+  if (folder) {
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "folder-delete-button";
+    remove.textContent = "Remove";
+    remove.setAttribute("aria-label", `Remove folder ${folder.name}`);
+    remove.addEventListener("click", () => deleteFolder(folder));
+    heading.append(remove);
+  }
+  group.append(heading, ...sessions.map(createSessionRow));
+  return group;
+}
+
 function renderSessions() {
   sessionList.replaceChildren();
-  state.sessions.forEach((session) => {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "session-button";
-    button.textContent = session.title;
-    button.title = session.title;
-    if (session.id === state.sessionId) button.setAttribute("aria-current", "page");
-    button.addEventListener("click", () => selectSession(session.id));
-    sessionList.append(button);
+  const unfiled = state.sessions.filter((session) => session.folder_id === null);
+  if (unfiled.length) sessionList.append(createSessionGroup("No folder", unfiled));
+  state.folders.forEach((folder) => {
+    const sessions = state.sessions.filter((session) => session.folder_id === folder.id);
+    sessionList.append(createSessionGroup(folder.name, sessions, folder));
   });
-  noSessions.hidden = state.sessions.length > 0;
+  noSessions.hidden = state.sessions.length > 0 || state.folders.length > 0;
+  noSessions.textContent = "No conversations yet.";
 }
 
 async function loadSessions() {
-  state.sessions = (await api("/api/agent/sessions")).sessions;
+  const [sessionResult, folderResult] = await Promise.all([
+    api("/api/agent/sessions"), api("/api/agent/folders"),
+  ]);
+  state.sessions = sessionResult.sessions;
+  state.folders = folderResult.folders;
   renderSessions();
+}
+
+function parseTimestamp(value) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function absoluteTimestamp(value) {
+  const date = parseTimestamp(value);
+  if (!date) return "Time unavailable";
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: "medium", timeStyle: "short",
+  }).format(date);
+}
+
+function conversationTimestamp(value) {
+  const date = parseTimestamp(value);
+  if (!date) return "";
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const day = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  const daysAgo = Math.round((today - day) / 86400000);
+  const clock = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(date);
+  if (daysAgo === 0) return `Today, ${clock}`;
+  if (daysAgo === 1) return `Yesterday, ${clock}`;
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short", day: "numeric", ...(date.getFullYear() === now.getFullYear() ? {} : { year: "numeric" }),
+  }).format(date);
+}
+
+function createTimestamp(value, className = "message-timestamp") {
+  const time = document.createElement("time");
+  time.className = className;
+  time.dateTime = value || "";
+  time.textContent = className === "session-timestamp" ? conversationTimestamp(value) : absoluteTimestamp(value);
+  time.title = absoluteTimestamp(value);
+  return time;
+}
+
+function appendMessageTimestamp(item, message) {
+  if (message.created_at) item.append(createTimestamp(message.created_at));
+}
+
+function openMoveConversation(session) {
+  state.movingSessionId = session.id;
+  moveConversationFolder.replaceChildren(new Option("No folder", ""));
+  state.folders.forEach((folder) => {
+    moveConversationFolder.append(new Option(folder.name, String(folder.id)));
+  });
+  moveConversationFolder.value = session.folder_id === null ? "" : String(session.folder_id);
+  moveConversationDialog.showModal();
 }
 
 function formattedToolValue(value) {
@@ -455,11 +588,13 @@ function renderMessages(messages, runStatus = null) {
         const item = document.createElement("div");
         item.className = "agent-message assistant";
         renderMarkdown(item, message.content);
+        appendMessageTimestamp(item, message);
         messageList.append(item);
         rendered += 1;
       }
       (Array.isArray(message.tool_calls) ? message.tool_calls : []).forEach((call) => {
         const view = createToolCall(call, runStatus);
+        appendMessageTimestamp(view.details, message);
         if (expandedCalls.has(call.id)) view.details.open = true;
         messageList.append(view.details);
         if (call.id) toolCalls.set(call.id, view);
@@ -481,6 +616,7 @@ function renderMessages(messages, runStatus = null) {
         const output = document.createElement("pre");
         output.textContent = formattedToolValue(message.content);
         details.append(summary, output);
+        appendMessageTimestamp(details, message);
         messageList.append(details);
         rendered += 1;
       }
@@ -490,6 +626,7 @@ function renderMessages(messages, runStatus = null) {
       const item = document.createElement("div");
       item.className = "agent-message user";
       renderMarkdown(item, message.content);
+      appendMessageTimestamp(item, message);
       messageList.append(item);
       rendered += 1;
     }
@@ -507,6 +644,7 @@ function renderMessages(messages, runStatus = null) {
   }
   state.messageSignature = signature;
   messageList.scrollTop = messageList.scrollHeight;
+  updateConversationScrollShadows();
 }
 
 function appendUserMessage(content) {
@@ -515,8 +653,10 @@ function appendUserMessage(content) {
   const item = document.createElement("div");
   item.className = "agent-message user";
   renderMarkdown(item, content);
+  item.append(createTimestamp(new Date().toISOString()));
   messageList.append(item);
   messageList.scrollTop = messageList.scrollHeight;
+  updateConversationScrollShadows();
   return item;
 }
 
@@ -576,6 +716,7 @@ async function selectSession(sessionId) {
   renderSessions();
   try {
     const detail = await api(`/api/agent/sessions/${sessionId}`);
+    state.currentSession = detail.session;
     conversationTitle.textContent = detail.session.title;
     const sessionProfile = state.profiles.find((profile) => profile.id === detail.session.profile_id);
     if (sessionProfile) {
@@ -591,6 +732,7 @@ async function selectSession(sessionId) {
     } else {
       renderApprovals([]);
     }
+    setBusy(false);
   } catch (error) { showError(error); }
 }
 
@@ -626,13 +768,64 @@ async function apiWithSessionPolling(sessionId, url, options) {
   }
 }
 
-document.querySelector("#new-conversation").addEventListener("click", () => {
+function resetConversation() {
   state.sessionId = null;
+  state.currentSession = null;
   renderSessions();
   renderMessages([]);
   renderApprovals([]);
   conversationTitle.textContent = "New conversation";
+  setBusy(false);
   messageInput.focus();
+}
+
+document.querySelector("#new-conversation").addEventListener("click", resetConversation);
+
+newFolderButton.addEventListener("click", async () => {
+  const name = window.prompt("Folder name");
+  if (name === null || !name.trim()) return;
+  clearError();
+  try {
+    await api("/api/agent/folders", {
+      method: "POST",
+      body: JSON.stringify({ name: name.trim() }),
+    });
+    await loadSessions();
+    notify("Folder created");
+  } catch (error) { showError(error); }
+});
+
+async function deleteFolder(folder) {
+  const message = `Remove "${folder.name}"? Conversations in it will move to No folder.`;
+  if (!window.confirm(message)) return;
+  clearError();
+  try {
+    await api(`/api/agent/folders/${folder.id}`, { method: "DELETE" });
+    await loadSessions();
+    notify("Folder removed");
+  } catch (error) { showError(error); }
+}
+
+document.querySelector("#cancel-move-conversation").addEventListener("click", () => {
+  moveConversationDialog.close();
+});
+
+moveConversationForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (!state.movingSessionId) return;
+  const sessionId = state.movingSessionId;
+  const folderId = moveConversationFolder.value ? Number(moveConversationFolder.value) : null;
+  clearError();
+  try {
+    await api(`/api/agent/sessions/${sessionId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ folder_id: folderId }),
+    });
+    moveConversationDialog.close();
+    state.movingSessionId = null;
+    await loadSessions();
+    notify("Conversation moved");
+  } catch (error) { showError(error); }
 });
 
 messageInput.addEventListener("keydown", (event) => {
@@ -650,6 +843,7 @@ async function ensureSession(firstMessage) {
     body: JSON.stringify({ profile_id: profileId, title: firstMessage.slice(0, 80) }),
   });
   state.sessionId = result.session.id;
+  state.currentSession = result.session;
   await loadSessions();
   conversationTitle.textContent = result.session.title;
   return state.sessionId;

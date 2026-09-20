@@ -113,9 +113,16 @@ CREATE TABLE IF NOT EXISTS llm_profiles (
 CREATE UNIQUE INDEX IF NOT EXISTS uq_default_llm_profile
     ON llm_profiles(is_default) WHERE is_default = 1;
 
+CREATE TABLE IF NOT EXISTS agent_folders (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL COLLATE NOCASE UNIQUE CHECK (length(name) BETWEEN 1 AND 100),
+    created_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS agent_sessions (
     id TEXT PRIMARY KEY,
     profile_id INTEGER NOT NULL REFERENCES llm_profiles(id) ON DELETE RESTRICT,
+    folder_id INTEGER REFERENCES agent_folders(id) ON DELETE SET NULL,
     title TEXT NOT NULL CHECK (length(title) BETWEEN 1 AND 200),
     status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'archived')),
     created_at TEXT NOT NULL,

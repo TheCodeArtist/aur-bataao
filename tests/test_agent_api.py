@@ -143,6 +143,8 @@ def test_agent_api_pauses_for_approval_then_resumes(client, app):
         "tool",
         "assistant",
     ]
+    assert all(message["created_at"].endswith("+00:00") for message in detail["messages"])
+    assert all(isinstance(message["message_id"], int) for message in detail["messages"])
     run_detail = client.get(
         f"/api/agent/runs/{completed_body['run']['id']}"
     ).get_json()
@@ -180,6 +182,29 @@ def test_agent_session_requires_a_configured_profile(client):
 
     assert response.status_code == 404
     assert response.get_json() == {"error": "Not found"}
+
+
+def test_agent_session_can_be_moved_between_folders(client):
+    profile = create_profile(client)
+    session = client.post(
+        "/api/agent/sessions", json={"profile_id": profile["id"]}
+    ).get_json()["session"]
+
+    created = client.post("/api/agent/folders", json={"name": "Planning"})
+    assert created.status_code == 201
+    folder = created.get_json()["folder"]
+    assert client.get("/api/agent/folders").get_json()["folders"] == [folder]
+
+    moved = client.patch(
+        f"/api/agent/sessions/{session['id']}", json={"folder_id": folder["id"]}
+    )
+    assert moved.status_code == 200
+    assert moved.get_json()["session"]["folder_id"] == folder["id"]
+
+    removed = client.delete(f"/api/agent/folders/{folder['id']}")
+    assert removed.status_code == 204
+    detail = client.get(f"/api/agent/sessions/{session['id']}").get_json()
+    assert detail["session"]["folder_id"] is None
 
 
 def test_agent_workspace_is_linked_from_the_task_app(client):

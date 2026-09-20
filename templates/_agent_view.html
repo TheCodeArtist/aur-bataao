@@ -3,7 +3,10 @@
     <aside class="agent-sidebar" aria-label="Agent conversations and settings">
       <button id="new-conversation" class="primary" type="button">New conversation</button>
       <nav aria-label="Conversations">
-        <h2>Conversations</h2>
+        <div class="session-list-heading">
+          <h2>Conversations</h2>
+          <button id="new-folder" class="quiet-button" type="button">+ Folder</button>
+        </div>
         <div id="session-list" class="session-list"></div>
         <p id="no-sessions" class="muted">No conversations yet.</p>
       </nav>
@@ -60,10 +63,12 @@
       </header>
 
       <div id="agent-error" class="agent-error" role="alert" hidden></div>
-      <div id="message-list" class="message-list" aria-live="polite">
-        <div id="agent-empty" class="agent-empty">
-          <h2>What should we work through?</h2>
-          <p>Ask about your tasks, plan the next action, or propose an update. You approve every change before it is applied.</p>
+      <div class="conversation-scroll">
+        <div id="message-list" class="message-list" aria-live="polite">
+          <div id="agent-empty" class="agent-empty">
+            <h2>What should we work through?</h2>
+            <p>Ask about your tasks, plan the next action, or propose an update. You approve every change before it is applied.</p>
+          </div>
         </div>
       </div>
       <section id="approval-list" class="approval-list" aria-label="Changes awaiting approval"></section>
@@ -78,4 +83,17 @@
       </form>
     </section>
   </div>
+  <dialog id="move-conversation-dialog" class="move-conversation-dialog">
+    <form id="move-conversation-form">
+      <h2>Move conversation</h2>
+      <label for="move-conversation-folder">Folder</label>
+      <select id="move-conversation-folder">
+        <option value="">No folder</option>
+      </select>
+      <div class="dialog-actions">
+        <button id="cancel-move-conversation" type="button">Cancel</button>
+        <button class="primary" type="submit">Move</button>
+      </div>
+    </form>
+  </dialog>
 </section>
