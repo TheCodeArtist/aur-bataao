@@ -151,6 +151,7 @@ function setBusy(busy, label = "Working…") {
   messageInput.disabled = busy || state.profiles.length === 0;
   if (busy) connectionStatus.textContent = label;
   else updateConnectionStatus();
+  renderWaitingIndicator();
 }
 
 function updateConnectionStatus() {
@@ -539,6 +540,35 @@ function appendMessageTimestamp(item, message) {
   if (message.created_at) item.append(createTimestamp(message.created_at));
 }
 
+function renderWaitingIndicator() {
+  let indicator = messageList.querySelector(".agent-waiting");
+  if (!state.busy) {
+    indicator?.remove();
+    return;
+  }
+  messageList.querySelector(".agent-empty")?.remove();
+  if (!indicator) {
+    indicator = document.createElement("div");
+    indicator.className = "agent-message assistant agent-waiting";
+    indicator.setAttribute("role", "status");
+    indicator.setAttribute("aria-label", "Waiting for LLM response");
+    indicator.setAttribute("aria-live", "polite");
+    indicator.setAttribute("aria-atomic", "true");
+
+    const dots = document.createElement("span");
+    dots.className = "agent-waiting-dots";
+    dots.setAttribute("aria-hidden", "true");
+    dots.append(document.createElement("span"), document.createElement("span"), document.createElement("span"));
+
+    const label = document.createElement("span");
+    label.textContent = "Waiting for LLM response…";
+    indicator.append(dots, label);
+  }
+  messageList.append(indicator);
+  messageList.scrollTop = messageList.scrollHeight;
+  updateConversationScrollShadows();
+}
+
 function openMoveConversation(session) {
   state.movingSessionId = session.id;
   moveConversationFolder.replaceChildren(new Option("No folder", ""));
@@ -648,6 +678,7 @@ function renderMessages(messages, runStatus = null) {
     empty.append(heading, copy);
     messageList.append(empty);
   }
+  renderWaitingIndicator();
   state.messageSignature = signature;
   messageList.scrollTop = messageList.scrollHeight;
   updateConversationScrollShadows();

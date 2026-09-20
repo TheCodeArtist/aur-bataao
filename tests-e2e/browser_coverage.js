@@ -16,7 +16,7 @@ export const BROWSER_COVERAGE_EXCLUSIONS = [
     reason: "Every event caller checks the model cache and discovery populates it before rendering.",
   },
   {
-    pathname: "/static/agent.js", name: "<anonymous>", line: 320, excerpt: "return;",
+    pathname: "/static/agent.js", name: "<anonymous>", line: 321, excerpt: "return;",
     reason: "Stale discovery success is asserted by the stale-model-discovery browser test; Chromium coalesces the async callback range.",
   },
   {
@@ -24,7 +24,7 @@ export const BROWSER_COVERAGE_EXCLUSIONS = [
     reason: "Session timestamps are schema-required and messages without timestamps skip createTimestamp.",
   },
   {
-    pathname: "/static/agent.js", name: "<anonymous>", line: 847, excerpt: "return;",
+    pathname: "/static/agent.js", name: "<anonymous>", line: 878, excerpt: "return;",
     reason: "Empty and busy submissions are asserted through requestSubmit/double-action browser tests; Chromium coalesces the async handler guard.",
   },
   {

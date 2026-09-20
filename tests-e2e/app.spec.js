@@ -223,6 +223,30 @@ test("agent request failures restore the composer", async ({ page }) => {
 });
 
 
+test("shows when the agent is waiting for an LLM response", async ({ page }) => {
+  let releaseRequest;
+  const requestGate = new Promise((resolve) => { releaseRequest = resolve; });
+  await page.route("**/api/agent/sessions/*/messages", async (route) => {
+    await requestGate;
+    await route.continue();
+  });
+  await page.goto("/?view=agent");
+  await page.getByLabel("Message the agent").fill("Take a moment to answer");
+  await page.getByRole("button", { name: "Send" }).click();
+
+  const waiting = page.getByRole("status", { name: "Waiting for LLM response" });
+  try {
+    await expect(waiting).toBeVisible();
+    await expect(page.getByLabel("Message the agent")).toBeDisabled();
+  } finally {
+    releaseRequest();
+  }
+
+  await expect(page.locator("#message-list")).toContainText("browser test agent is ready");
+  await expect(waiting).toHaveCount(0);
+});
+
+
 test("discovers, selects, and saves endpoint models", async ({ page }) => {
   await page.goto("/?view=agent");
   await page.getByText("Endpoint settings", { exact: true }).click();
