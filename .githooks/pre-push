@@ -22,7 +22,7 @@ printf '%s\n' 'Running test suite before push...'
 if ! command -v npm >/dev/null 2>&1; then
     printf '%s\n' \
         'Node.js and npm are required to run the browser-logic tests before pushing.' \
-        'Install Node.js 20.19 or newer and run npm ci.' >&2
+        'Install Node.js 20.19 or newer, run npm ci, then run npx playwright install chromium.' >&2
     exit 1
 fi
 

@@ -3,6 +3,7 @@ import {
   absoluteTimestamp,
   conversationTimestamp,
   formattedToolValue,
+  startSessionPolling,
 } from "./agent_logic.js";
 import { requestJson as api } from "./http.js";
 
@@ -697,26 +698,14 @@ async function selectSession(sessionId) {
 }
 
 function pollSessionMessages(sessionId) {
-  let stopped = false;
-  let inFlight = false;
-  const refresh = async () => {
-    if (stopped || inFlight || state.sessionId !== sessionId) return;
-    inFlight = true;
-    try {
-      const detail = await api(`/api/agent/sessions/${sessionId}`);
-      if (stopped || state.sessionId !== sessionId) return;
+  return startSessionPolling({
+    sessionId,
+    currentSessionId: () => state.sessionId,
+    load: () => api(`/api/agent/sessions/${sessionId}`),
+    render: (detail) => {
       renderMessages(detail.messages, detail.runs.at(-1)?.status);
-    } catch (_) {
-      // The primary request reports failures; polling is best-effort UI only.
-    } finally {
-      inFlight = false;
-    }
-  };
-  const timer = setInterval(refresh, 750);
-  return () => {
-    stopped = true;
-    clearInterval(timer);
-  };
+    },
+  });
 }
 
 async function apiWithSessionPolling(sessionId, url, options) {

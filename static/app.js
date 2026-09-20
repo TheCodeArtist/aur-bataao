@@ -99,8 +99,9 @@ function bindDropzone(zone, onFiles) {
     if (!event.target.closest("button")) zone.focus();
   });
   input.addEventListener("change", () => {
-    if (input.files.length) onFiles([...input.files]);
+    const selectedFiles = [...input.files];
     input.value = "";
+    if (selectedFiles.length) onFiles(selectedFiles);
   });
 
   zone.addEventListener("keydown", (event) => {

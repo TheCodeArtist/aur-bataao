@@ -130,18 +130,20 @@ Backups should include both the SQLite database and the attachments directory.
 ```powershell
 .\.venv\Scripts\python.exe -m pip install -e ".[test]"
 npm ci
+npx playwright install chromium
 git config --local core.hooksPath .githooks
 .\.venv\Scripts\python.exe -m pytest --cov --cov-report=term-missing
 npm test
 ```
 
 Python coverage includes statement and branch coverage across the application
-and fails below 95%. JavaScript coverage uses Node's built-in test runner and
-fails below 95% for lines, branches, or functions in the standalone Markdown
-renderer. The DOM-heavy controllers stay outside the numerical JavaScript gate;
-their server contracts are covered by Flask integration tests. Extract reusable
-logic into importable modules before adding it to the gate, and add a small real-
-browser smoke suite only when cross-browser behavior warrants that extra cost.
+and fails below 95%. JavaScript unit coverage uses Node's built-in test runner
+and fails below 95% for lines, branches, or functions across the Markdown,
+networking, task, and agent logic modules. DOM controller behavior is verified
+separately in Chromium against an isolated Flask server, temporary SQLite
+database, temporary attachments, and deterministic fake model provider. Run
+only the fast numerical gate with `npm run test:unit`, or the browser suite with
+`npm run test:e2e`; `npm test` runs both.
 
 The app initializes its schema automatically. Task-list loads reconcile active
 date labels at most once per minute, and an open browser checks for local
@@ -175,7 +177,8 @@ The hooks provide these checks:
   to 72 characters. It requires a Conventional Commit prefix and a blank line
   before an optional description.
 - **`pre-push`:** Runs branch-aware Python coverage and the JavaScript test and
-  coverage suite. The push stops if either suite fails or falls below 95%.
+  browser suites. The push stops if any behavior test fails or either numerical
+  coverage gate falls below 95%.
 
 Supported Conventional Commit types are `build`, `chore`, `ci`, `docs`, `feat`,
 `fix`, `perf`, `refactor`, `revert`, `style`, and `test`. Lowercase scopes and
@@ -196,7 +199,8 @@ The hooks look for Python in this order:
 
 Commits and pushes fail with a setup message when Python is unavailable. Pushes
 also require Node.js 20.19 or newer, npm, and dependencies installed with
-`npm ci`.
+`npm ci`. Install the managed Chromium build once with
+`npx playwright install chromium`.
 
 When adding or updating hook entry points on Windows, preserve their executable
 mode for other platforms:

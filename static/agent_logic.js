@@ -39,3 +39,33 @@ export function formattedToolValue(value) {
     return typeof value === "string" ? value : String(value ?? "");
   }
 }
+
+export function startSessionPolling({
+  sessionId,
+  currentSessionId,
+  load,
+  render,
+  schedule = setInterval,
+  cancel = clearInterval,
+  interval = 750,
+}) {
+  let stopped = false;
+  let inFlight = false;
+  const refresh = async () => {
+    if (stopped || inFlight || currentSessionId() !== sessionId) return;
+    inFlight = true;
+    try {
+      const detail = await load(sessionId);
+      if (!stopped && currentSessionId() === sessionId) render(detail);
+    } catch (_) {
+      // The primary request reports failures; polling is best-effort UI only.
+    } finally {
+      inFlight = false;
+    }
+  };
+  const timer = schedule(refresh, interval);
+  return () => {
+    stopped = true;
+    cancel(timer);
+  };
+}

@@ -6,6 +6,7 @@ import {
   conversationTimestamp,
   formattedToolValue,
   parseTimestamp,
+  startSessionPolling,
 } from "../static/agent_logic.js";
 
 
@@ -33,4 +34,71 @@ test("tool values are readable without trusting their input shape", () => {
   assert.equal(formattedToolValue("not json"), "not json");
   assert.equal(formattedToolValue(null), "null");
   assert.equal(formattedToolValue(undefined), undefined);
+});
+
+
+test("session polling prevents overlap and ignores stale results", async () => {
+  let refresh;
+  let resolveLoad;
+  let activeSession = "one";
+  let loads = 0;
+  const rendered = [];
+  const cancelled = [];
+  const stop = startSessionPolling({
+    sessionId: "one",
+    currentSessionId: () => activeSession,
+    load: async () => {
+      loads += 1;
+      return new Promise((resolve) => { resolveLoad = resolve; });
+    },
+    render: (detail) => rendered.push(detail),
+    schedule: (callback, interval) => {
+      assert.equal(interval, 750);
+      refresh = callback;
+      return 41;
+    },
+    cancel: (timer) => cancelled.push(timer),
+  });
+
+  const firstRefresh = refresh();
+  await refresh();
+  assert.equal(loads, 1);
+  activeSession = "two";
+  resolveLoad({ messages: [] });
+  await firstRefresh;
+  assert.deepEqual(rendered, []);
+  await refresh();
+  assert.equal(loads, 1);
+  stop();
+  assert.deepEqual(cancelled, [41]);
+});
+
+
+test("session polling renders current results and treats failures as best effort", async () => {
+  let refresh;
+  let shouldFail = false;
+  const rendered = [];
+  const stop = startSessionPolling({
+    sessionId: "current",
+    currentSessionId: () => "current",
+    load: async () => {
+      if (shouldFail) throw new Error("temporary");
+      return { messages: ["ready"] };
+    },
+    render: (detail) => rendered.push(detail),
+    schedule: (callback) => {
+      refresh = callback;
+      return 7;
+    },
+    cancel: () => {},
+    interval: 25,
+  });
+  await refresh();
+  assert.deepEqual(rendered, [{ messages: ["ready"] }]);
+  shouldFail = true;
+  await refresh();
+  assert.equal(rendered.length, 1);
+  stop();
+  await refresh();
+  assert.equal(rendered.length, 1);
 });
