@@ -224,13 +224,19 @@ Each conversation is bound to a saved profile. Every run snapshots that
 profile's base URL, model, key-variable name, timeout, and tool capability, so a
 later profile edit cannot change the configuration recorded for an older run.
 
-The agent exposes `list_tasks` and `get_task` as read-only tools. Creating or
-updating tasks, comments, waiting state, follow-ups, labels, and dependencies
-all require explicit approval. Tool calls execute inside SQLite savepoints, and
-the model receives either the committed result or a safe error. Conversations,
-messages, runs, events, token usage, and approvals are durable. Pending
-approvals survive a restart; a run interrupted while actively contacting the
-model is marked failed during startup.
+The agent exposes `list_tasks` and `get_task` as read-only tools. `list_tasks`
+is the single composable query surface: it supports stable `limit`/`offset`
+pagination plus workflow, exact-label, blocked, blocking, overdue-follow-up,
+overdue-due-date, inclusive due-date range, and title/description/comment text
+filters. Filters combine with AND. `get_task` returns both blockers and
+dependents so either direction of a dependency chain can be inspected. Creating
+or updating tasks,
+comments, waiting state, follow-ups, labels, and dependencies all require
+explicit approval. Tool calls execute inside SQLite savepoints, and the model
+receives either the committed result or a safe error. Conversations, messages,
+runs, events, token usage, and approvals are durable. Pending approvals survive
+a restart; a run interrupted while actively contacting the model is marked
+failed during startup.
 
 ## Behavioral model
 

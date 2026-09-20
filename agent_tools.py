@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, Callable, Mapping
 from zoneinfo import ZoneInfo
 
-from task_service import TaskService
+from task_service import DEFAULT_FOLLOW_UP_TIME, TaskService, utc_now
 
 
 class ToolNotFoundError(LookupError):
@@ -72,14 +72,67 @@ class TaskToolRegistry:
         return (
             ToolDefinition(
                 "list_tasks",
-                "List tasks in backlog order, optionally filtered by workflow status.",
+                (
+                    "List tasks in stable backlog order. Filters combine with AND. "
+                    "Use offset plus limit to page until fewer than limit tasks are returned."
+                ),
                 _object_schema(
                     {
                         "status": {
                             "type": "string",
                             "enum": ["todo", "in_progress", "done"],
                         },
+                        "label": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 32,
+                            "description": "Exact active label name, case-insensitive.",
+                        },
+                        "blocked": {
+                            "type": "boolean",
+                            "description": (
+                                "Whether the unfinished task is waiting or has an "
+                                "unfinished blocker."
+                            ),
+                        },
+                        "blocking": {
+                            "type": "boolean",
+                            "description": (
+                                "Whether the task currently blocks an unfinished task."
+                            ),
+                        },
+                        "follow_up_overdue": {
+                            "type": "boolean",
+                            "description": (
+                                "Whether an active waiting follow-up is due at or before now."
+                            ),
+                        },
+                        "overdue": {
+                            "type": "boolean",
+                            "description": (
+                                "Whether an unfinished task is past its due date."
+                            ),
+                        },
+                        "due_from": {
+                            "type": "string",
+                            "format": "date",
+                            "description": "Inclusive earliest due date.",
+                        },
+                        "due_through": {
+                            "type": "string",
+                            "format": "date",
+                            "description": "Inclusive latest due date.",
+                        },
+                        "search": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 500,
+                            "description": (
+                                "Case-insensitive text in title, description, or comments."
+                            ),
+                        },
                         "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+                        "offset": {"type": "integer", "minimum": 0},
                     }
                 ),
                 False,
@@ -239,22 +292,151 @@ class TaskToolRegistry:
         )
 
     def _list_tasks(
-        self, arguments: Mapping[str, Any], _: datetime | None
+        self, arguments: Mapping[str, Any], now: datetime | None
     ) -> list[dict[str, Any]]:
-        _check_keys(arguments, {"status", "limit"})
+        allowed = {
+            "status",
+            "label",
+            "blocked",
+            "blocking",
+            "follow_up_overdue",
+            "overdue",
+            "due_from",
+            "due_through",
+            "search",
+            "limit",
+            "offset",
+        }
+        _check_keys(arguments, allowed)
         status = arguments.get("status")
         if status is not None and status not in {"todo", "in_progress", "done"}:
             raise ValueError("Task status is invalid")
         limit = arguments.get("limit", 50)
         if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 100:
             raise ValueError("Limit must be an integer between 1 and 100")
-        query = "SELECT * FROM tasks"
+        offset = arguments.get("offset", 0)
+        if not isinstance(offset, int) or isinstance(offset, bool) or offset < 0:
+            raise ValueError("Offset must be a non-negative integer")
+        local_now = (now or utc_now()).astimezone(self.tasks.timezone)
+
+        conditions: list[str] = []
         parameters: list[Any] = []
         if status is not None:
-            query += " WHERE status = ?"
+            conditions.append("t.status = ?")
             parameters.append(status)
-        query += " ORDER BY rank_key, id LIMIT ?"
-        parameters.append(limit)
+        if "label" in arguments:
+            label = _required_string(arguments, "label", 32)
+            conditions.append(
+                """
+                EXISTS (
+                    SELECT 1
+                    FROM task_labels tl JOIN labels l ON l.id = tl.label_id
+                    WHERE tl.task_id = t.id AND tl.removed_at IS NULL
+                      AND l.name = ? COLLATE NOCASE
+                )
+                """
+            )
+            parameters.append(label)
+
+        blocked_sql = """
+            t.status <> 'done' AND (
+                EXISTS (
+                    SELECT 1 FROM task_waiting w
+                    WHERE w.task_id = t.id AND w.resolved_at IS NULL
+                )
+                OR EXISTS (
+                    SELECT 1
+                    FROM task_dependencies d
+                    JOIN tasks blocker ON blocker.id = d.blocker_task_id
+                    WHERE d.blocked_task_id = t.id AND blocker.status <> 'done'
+                )
+            )
+        """
+        if "blocked" in arguments:
+            blocked = _boolean(arguments, "blocked")
+            conditions.append(f"({blocked_sql})" if blocked else f"NOT ({blocked_sql})")
+
+        blocking_sql = """
+            t.status <> 'done' AND EXISTS (
+                SELECT 1
+                FROM task_dependencies d
+                JOIN tasks blocked_task ON blocked_task.id = d.blocked_task_id
+                WHERE d.blocker_task_id = t.id AND blocked_task.status <> 'done'
+            )
+        """
+        if "blocking" in arguments:
+            blocking = _boolean(arguments, "blocking")
+            conditions.append(
+                f"({blocking_sql})" if blocking else f"NOT ({blocking_sql})"
+            )
+
+        if "follow_up_overdue" in arguments:
+            follow_up_overdue = _boolean(arguments, "follow_up_overdue")
+            follow_up_sql = """
+                t.status <> 'done' AND EXISTS (
+                    SELECT 1 FROM task_waiting w
+                    WHERE w.task_id = t.id AND w.resolved_at IS NULL
+                      AND w.next_follow_up_on IS NOT NULL
+                      AND (
+                          w.next_follow_up_on < ?
+                          OR (
+                              w.next_follow_up_on = ?
+                              AND COALESCE(w.next_follow_up_time, ?) <= ?
+                          )
+                      )
+                )
+            """
+            conditions.append(
+                f"({follow_up_sql})"
+                if follow_up_overdue
+                else f"NOT ({follow_up_sql})"
+            )
+            today = local_now.date().isoformat()
+            parameters.extend(
+                [today, today, DEFAULT_FOLLOW_UP_TIME, local_now.strftime("%H:%M")]
+            )
+
+        if "overdue" in arguments:
+            overdue = _boolean(arguments, "overdue")
+            overdue_sql = """
+                t.status <> 'done' AND t.due_date IS NOT NULL AND t.due_date < ?
+            """
+            conditions.append(f"({overdue_sql})" if overdue else f"NOT ({overdue_sql})")
+            parameters.append(local_now.date().isoformat())
+
+        due_from = _optional_date(arguments, "due_from")
+        due_through = _optional_date(arguments, "due_through")
+        if due_from is not None:
+            conditions.append("t.due_date >= ?")
+            parameters.append(due_from)
+        if due_through is not None:
+            conditions.append("t.due_date <= ?")
+            parameters.append(due_through)
+        if due_from is not None and due_through is not None and due_from > due_through:
+            raise ValueError("due_from must not be after due_through")
+
+        if "search" in arguments:
+            search = _required_string(arguments, "search", 500)
+            conditions.append(
+                """
+                (
+                    instr(lower(t.title), lower(?)) > 0
+                    OR instr(lower(t.description), lower(?)) > 0
+                    OR EXISTS (
+                        SELECT 1 FROM comments c
+                        WHERE c.task_id = t.id
+                          AND instr(lower(c.body), lower(?)) > 0
+                    )
+                )
+                """
+            )
+            parameters.extend([search, search, search])
+
+        query = "SELECT t.* FROM tasks t"
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
+        query += " ORDER BY t.rank_key, t.id LIMIT ? OFFSET ?"
+        parameters.extend([limit, offset])
         return [
             self._task_summary(row)
             for row in self.db.execute(query, parameters).fetchall()
@@ -294,6 +476,17 @@ class TaskToolRegistry:
                 SELECT t.id, t.title, t.status
                 FROM task_dependencies d JOIN tasks t ON t.id = d.blocker_task_id
                 WHERE d.blocked_task_id = ? ORDER BY t.rank_key, t.id
+                """,
+                (task_id,),
+            ).fetchall()
+        ]
+        task["dependents"] = [
+            dict(row)
+            for row in self.db.execute(
+                """
+                SELECT t.id, t.title, t.status
+                FROM task_dependencies d JOIN tasks t ON t.id = d.blocked_task_id
+                WHERE d.blocker_task_id = ? ORDER BY t.rank_key, t.id
                 """,
                 (task_id,),
             ).fetchall()
@@ -446,6 +639,16 @@ class TaskToolRegistry:
             """,
             (task_id,),
         ).fetchone()[0]
+        blocking_tasks = self.db.execute(
+            """
+            SELECT count(*)
+            FROM task_dependencies d JOIN tasks t ON t.id = d.blocked_task_id
+            WHERE d.blocker_task_id = ? AND t.status <> 'done'
+            """,
+            (task_id,),
+        ).fetchone()[0]
+        next_follow_up_on = waiting["next_follow_up_on"] if waiting else None
+        next_follow_up_time = waiting["next_follow_up_time"] if waiting else None
         return {
             "id": task_id,
             "title": row["title"],
@@ -453,7 +656,10 @@ class TaskToolRegistry:
             "status": row["status"],
             "due_date": row["due_date"],
             "waiting_on": waiting["person_name"] if waiting else None,
+            "next_follow_up_on": next_follow_up_on,
+            "next_follow_up_time": next_follow_up_time,
             "unresolved_blockers": unresolved_blockers,
+            "blocking_tasks": blocking_tasks,
             "updated_at": row["updated_at"],
         }
 
@@ -503,3 +709,22 @@ def _required_string(
     if not isinstance(value, str) or not 1 <= len(value.strip()) <= maximum:
         raise ValueError(f"{name} must be between 1 and {maximum} characters")
     return value.strip()
+
+
+def _boolean(arguments: Mapping[str, Any], name: str) -> bool:
+    value = arguments[name]
+    if not isinstance(value, bool):
+        raise ValueError(f"{name} must be a boolean")
+    return value
+
+
+def _optional_date(arguments: Mapping[str, Any], name: str) -> str | None:
+    if name not in arguments:
+        return None
+    value = arguments[name]
+    if not isinstance(value, str):
+        raise ValueError(f"{name} must be YYYY-MM-DD")
+    try:
+        return date.fromisoformat(value).isoformat()
+    except ValueError as exc:
+        raise ValueError(f"{name} must be YYYY-MM-DD") from exc

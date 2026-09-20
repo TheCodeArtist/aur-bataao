@@ -17,6 +17,7 @@ STATUS_LABELS = {
 STATUSES = frozenset(STATUS_LABELS)
 RANK_SPACING = 1024
 SQLITE_INTEGER_MIN = -(2**63)
+DEFAULT_FOLLOW_UP_TIME = "09:00"
 
 
 class TaskNotFoundError(LookupError):

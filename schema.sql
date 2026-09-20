@@ -94,6 +94,8 @@ CREATE INDEX IF NOT EXISTS ix_waiting_next_follow_up
     ON task_waiting(next_follow_up_on) WHERE resolved_at IS NULL;
 CREATE INDEX IF NOT EXISTS ix_events_task_date ON task_events(task_id, local_date);
 CREATE INDEX IF NOT EXISTS ix_task_labels_task ON task_labels(task_id, removed_at);
+CREATE INDEX IF NOT EXISTS ix_task_labels_label ON task_labels(label_id, removed_at, task_id);
+CREATE INDEX IF NOT EXISTS ix_comments_task ON comments(task_id, id);
 CREATE INDEX IF NOT EXISTS ix_task_attachments_task ON task_attachments(task_id, id);
 
 CREATE TABLE IF NOT EXISTS llm_profiles (

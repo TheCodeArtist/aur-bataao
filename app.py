@@ -34,6 +34,7 @@ from llm_profiles import LlmProfileNotFoundError, LlmProfileStore
 from llm_provider import ChatCompletionsProvider
 
 from task_service import (
+    DEFAULT_FOLLOW_UP_TIME,
     RANK_SPACING,
     SQLITE_INTEGER_MIN,
     STATUS_LABELS,
@@ -67,7 +68,6 @@ NOTICE_MESSAGES = {
 MAX_RECONCILE_AGE_SECONDS = 60
 PREVIEWABLE_IMAGE_TYPES = {"image/gif", "image/jpeg", "image/png", "image/webp"}
 SQLITE_INTEGER_MAX = 2**63 - 1
-DEFAULT_FOLLOW_UP_TIME = "09:00"
 EMPTY_STATE_HEROES = (
     ("🍻", "Clinking beer mugs"),
     ("🥂", "Clinking glasses"),
