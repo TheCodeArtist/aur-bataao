@@ -27,6 +27,24 @@ Workflow state is deliberately simple: **To do**, **In progress**, or **Done**.
 Being blocked by another task or person is tracked separately, so the original
 workflow state is preserved.
 
+## See it in action
+
+These screenshots use a temporary database populated only with synthetic demo
+data. No task, person, attachment, conversation, or setting from a real Aur
+Bataao database is included.
+
+### Stay focused on the next useful action
+
+![Focused view presenting one actionable task](docs/screenshots/focused-view.jpg)
+
+### Scan and filter the complete backlog
+
+![All Tasks view with workflow states, labels, due dates, and blocking status](docs/screenshots/all-tasks-view.jpg)
+
+### Keep the supporting context with the work
+
+![Expanded task details showing notes, labels, waiting status, relationships, attachments, and comments](docs/screenshots/task-details.jpg)
+
 ## Get started
 
 Aur Bataao requires Python 3.11 or newer. Run these commands from the project

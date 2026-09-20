@@ -6,6 +6,7 @@
     "node": ">=20.19.0"
   },
   "scripts": {
+    "screenshots:readme": "node scripts/capture-readme-screenshots.mjs",
     "test": "npm run test:unit && npm run test:e2e:coverage",
     "test:unit": "node scripts/run-js-unit-tests.mjs",
     "test:unit:watch": "node --test --watch tests-js/*.test.js",

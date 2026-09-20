@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import tempfile
 from pathlib import Path
 
@@ -190,4 +191,9 @@ with app.app_context():
 
 
 if __name__ == "__main__":
-    serve(app, host="127.0.0.1", port=4173, threads=16)
+    serve(
+        app,
+        host="127.0.0.1",
+        port=int(os.environ.get("AUR_BATAAO_E2E_PORT", "4173")),
+        threads=16,
+    )
