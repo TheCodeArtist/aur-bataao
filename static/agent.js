@@ -36,6 +36,8 @@ const newFolderButton = document.querySelector("#new-folder");
 const moveConversationDialog = document.querySelector("#move-conversation-dialog");
 const moveConversationForm = document.querySelector("#move-conversation-form");
 const moveConversationFolder = document.querySelector("#move-conversation-folder");
+const moveConversationCancel = document.querySelector("#cancel-move-conversation");
+const moveConversationSubmit = moveConversationForm.querySelector('[type="submit"]');
 const messageList = document.querySelector("#message-list");
 const conversationScroll = document.querySelector(".conversation-scroll");
 const approvalList = document.querySelector("#approval-list");
@@ -579,6 +581,18 @@ function openMoveConversation(session) {
   moveConversationDialog.showModal();
 }
 
+function setMoveConversationPending(pending) {
+  moveConversationForm.setAttribute("aria-busy", String(pending));
+  moveConversationFolder.disabled = pending;
+  moveConversationCancel.disabled = pending;
+  moveConversationSubmit.disabled = pending;
+}
+
+function closeMoveConversation() {
+  state.movingSessionId = null;
+  moveConversationDialog.close();
+}
+
 function createToolCall(call, runStatus) {
   const view = toolCallState(call, runStatus);
   const details = document.createElement("details");
@@ -829,8 +843,11 @@ async function deleteFolder(folder) {
   } catch (error) { showError(error); }
 }
 
-document.querySelector("#cancel-move-conversation").addEventListener("click", () => {
-  moveConversationDialog.close();
+moveConversationCancel.addEventListener("click", closeMoveConversation);
+
+moveConversationDialog.addEventListener("cancel", (event) => {
+  event.preventDefault();
+  moveConversationCancel.click();
 });
 
 moveConversationForm.addEventListener("submit", async (event) => {
@@ -838,17 +855,23 @@ moveConversationForm.addEventListener("submit", async (event) => {
   if (!state.movingSessionId) return;
   const sessionId = state.movingSessionId;
   const folderId = moveConversationFolder.value ? Number(moveConversationFolder.value) : null;
+  state.movingSessionId = null;
+  setMoveConversationPending(true);
   clearError();
   try {
     await api(`/api/agent/sessions/${sessionId}`, {
       method: "PATCH",
       body: JSON.stringify({ folder_id: folderId }),
     });
-    moveConversationDialog.close();
-    state.movingSessionId = null;
+    closeMoveConversation();
     await loadSessions();
     notify("Conversation moved");
-  } catch (error) { showError(error); }
+  } catch (error) {
+    state.movingSessionId = sessionId;
+    showError(error);
+  } finally {
+    setMoveConversationPending(false);
+  }
 });
 
 messageInput.addEventListener("keydown", (event) => {

@@ -13,6 +13,20 @@ function entry(url, source, functions) {
 }
 
 
+function completeSummary(pathname) {
+  return {
+    pathname,
+    functions: { covered: 1, total: 1 },
+    uncoveredFunctions: [],
+    blocks: { covered: 1, total: 1 },
+    accountable: { covered: 1, total: 1 },
+    uncovered: [],
+    excluded: [],
+    unusedExclusions: [],
+  };
+}
+
+
 test("browser coverage summaries merge repeated controller samples", () => {
   const source = "first\nsecond\nthird";
   const first = entry("http://127.0.0.1/static/app.js", "", [{
@@ -115,11 +129,17 @@ test("browser coverage applies exact justified exclusions and gates accountable 
   assert.deepEqual(summary.uncovered, []);
   assert.equal(summary.unusedExclusions.length, 3);
   assert.equal(summary.excluded[0].reason, "schema invariant");
-  assert.throws(() => assertBrowserCoverage([summary]), /stale exclusion/);
+  assert.throws(
+    () => assertBrowserCoverage([summary, completeSummary("/static/agent.js")]),
+    /stale exclusion/,
+  );
 
   const [exactSummary] = summarizeBrowserCoverage([sample], [exclusions.at(-1)]);
   assert.deepEqual(exactSummary.unusedExclusions, []);
-  assert.doesNotThrow(() => assertBrowserCoverage([exactSummary]));
+  assert.doesNotThrow(() => assertBrowserCoverage([
+    exactSummary,
+    completeSummary("/static/agent.js"),
+  ]));
 });
 
 
@@ -135,8 +155,16 @@ test("browser coverage gate rejects uncalled functions and accountable gaps", ()
     unusedExclusions: [],
   };
   assert.throws(
-    () => assertBrowserCoverage([incomplete]),
+    () => assertBrowserCoverage([incomplete, completeSummary("/static/agent.js")]),
     /Browser controller coverage gate failed/,
+  );
+});
+
+
+test("browser coverage gate rejects missing controller data", () => {
+  assert.throws(
+    () => assertBrowserCoverage([completeSummary("/static/app.js")]),
+    /Missing browser controller coverage: \/static\/agent\.js/,
   );
 });
 

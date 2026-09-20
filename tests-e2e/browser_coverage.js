@@ -16,7 +16,7 @@ export const BROWSER_COVERAGE_EXCLUSIONS = [
     reason: "Every event caller checks the model cache and discovery populates it before rendering.",
   },
   {
-    pathname: "/static/agent.js", name: "<anonymous>", line: 321, excerpt: "return;",
+    pathname: "/static/agent.js", name: "<anonymous>", line: 323, excerpt: "return;",
     reason: "Stale discovery success is asserted by the stale-model-discovery browser test; Chromium coalesces the async callback range.",
   },
   {
@@ -24,7 +24,7 @@ export const BROWSER_COVERAGE_EXCLUSIONS = [
     reason: "Session timestamps are schema-required and messages without timestamps skip createTimestamp.",
   },
   {
-    pathname: "/static/agent.js", name: "<anonymous>", line: 878, excerpt: "return;",
+    pathname: "/static/agent.js", name: "<anonymous>", line: 901, excerpt: "return;",
     reason: "Empty and busy submissions are asserted through requestSubmit/double-action browser tests; Chromium coalesces the async handler guard.",
   },
   {
@@ -286,12 +286,17 @@ export function formatBrowserCoverage(summaries) {
 
 
 export function assertBrowserCoverage(summaries) {
+  const summaryPaths = new Set(summaries.map((summary) => summary.pathname));
+  const missing = [...CONTROLLER_PATHS].filter((pathname) => !summaryPaths.has(pathname));
   const failures = summaries.filter((summary) => (
     summary.functions.covered !== summary.functions.total
     || summary.accountable.covered !== summary.accountable.total
     || summary.unusedExclusions.length > 0
   ));
-  if (failures.length) {
-    throw new Error(`Browser controller coverage gate failed.\n${formatBrowserCoverage(failures)}`);
+  if (missing.length || failures.length) {
+    const details = [];
+    if (missing.length) details.push(`Missing browser controller coverage: ${missing.join(", ")}`);
+    if (failures.length) details.push(formatBrowserCoverage(failures));
+    throw new Error(`Browser controller coverage gate failed.\n${details.join("\n")}`);
   }
 }

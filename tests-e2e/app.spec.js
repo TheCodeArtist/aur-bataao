@@ -825,7 +825,7 @@ test("renders paired and orphan tool history accessibly", async ({ page, request
 });
 
 
-test("submits messages by keyboard and safely cancels organization actions", async ({ page }) => {
+test("submits messages by keyboard and safely cancels organization actions", async ({ page, request }) => {
   await page.goto("/?view=agent");
   const input = page.getByLabel("Message the agent");
   await input.fill("Keyboard conversation");
@@ -839,14 +839,23 @@ test("submits messages by keyboard and safely cancels organization actions", asy
   page.once("dialog", (dialog) => dialog.accept("   "));
   await page.getByRole("button", { name: "+ Folder" }).click();
   await expect(page.locator(".session-group-heading")).toHaveCount(1);
+  page.once("dialog", (dialog) => dialog.accept("Cancelled move target"));
+  await page.getByRole("button", { name: "+ Folder" }).click();
+  await expect(page.getByRole("heading", { name: "Cancelled move target" })).toBeVisible();
 
   await page.getByRole("button", {
     name: "Move Keyboard conversation to a folder",
     exact: true,
   }).click();
   const moveDialog = page.locator("#move-conversation-dialog");
-  await moveDialog.getByRole("button", { name: "Cancel" }).click();
+  await moveDialog.getByLabel("Folder").selectOption({ label: "Cancelled move target" });
+  await page.keyboard.press("Escape");
   await expect(moveDialog).not.toBeVisible();
+  await page.locator("#move-conversation-form").evaluate((form) => form.requestSubmit());
+  await page.waitForLoadState("networkidle");
+  const sessions = await (await request.get("/api/agent/sessions")).json();
+  const session = sessions.sessions.find((item) => item.title === "Keyboard conversation");
+  expect(session.folder_id).toBeNull();
 });
 
 
@@ -1362,11 +1371,45 @@ test("recovers from Agent organization failures and no-op actions", async ({ pag
   const moveDialog = page.locator("#move-conversation-dialog");
   await moveDialog.getByLabel("Folder").selectOption({ label: "Movable folder" });
   await moveDialog.getByRole("button", { name: "Move" }).click();
+  await expect(moveDialog).not.toBeVisible();
+  await expect(
+    page.locator(".session-group").filter({
+      has: page.getByRole("heading", { name: "Movable folder" }),
+    }).getByRole("button", { name: "Organization failure recovery", exact: true }),
+  ).toBeVisible();
   await moveButton.click();
   await expect(moveDialog.getByLabel("Folder")).toHaveValue(/\d+/);
   await moveDialog.getByLabel("Folder").selectOption("");
-  await moveDialog.getByRole("button", { name: "Move" }).click();
-  await page.locator("#move-conversation-form").evaluate((form) => form.requestSubmit());
+  let releaseMove;
+  const moveGate = new Promise((resolve) => { releaseMove = resolve; });
+  let moveRequests = 0;
+  await page.route("**/api/agent/sessions/*", async (route) => {
+    if (route.request().method() === "PATCH") {
+      moveRequests += 1;
+      await moveGate;
+    }
+    await route.continue();
+  });
+  const moved = page.waitForResponse((response) => (
+    response.request().method() === "PATCH"
+    && /\/api\/agent\/sessions\/[^/]+$/.test(new URL(response.url()).pathname)
+  ));
+  const moveSubmit = moveDialog.getByRole("button", { name: "Move" });
+  await moveSubmit.evaluate((button) => {
+    button.click();
+    button.closest("form").requestSubmit();
+  });
+  await expect.poll(() => moveRequests).toBe(1);
+  await expect(moveSubmit).toBeDisabled();
+  await expect(moveDialog.getByRole("button", { name: "Cancel" })).toBeDisabled();
+  await page.keyboard.press("Escape");
+  await expect(moveDialog).toBeVisible();
+  releaseMove();
+  expect((await moved).ok()).toBeTruthy();
+  await expect(moveDialog).not.toBeVisible();
+  await page.waitForLoadState("networkidle");
+  expect(moveRequests).toBe(1);
+  await page.unroute("**/api/agent/sessions/*");
 
   await page.route("**/api/agent/sessions/*", async (route) => {
     if (route.request().method() === "PATCH") {
@@ -1383,8 +1426,17 @@ test("recovers from Agent organization failures and no-op actions", async ({ pag
   await moveDialog.getByLabel("Folder").selectOption({ label: "Movable folder" });
   await moveDialog.getByRole("button", { name: "Move" }).click();
   await expect(page.getByRole("alert")).toContainText("Synthetic move conflict");
+  await expect(moveDialog.getByLabel("Folder")).toBeEnabled();
+  await expect(moveDialog.getByRole("button", { name: "Move" })).toBeEnabled();
+  await expect(moveDialog.getByRole("button", { name: "Cancel" })).toBeEnabled();
   await page.unroute("**/api/agent/sessions/*");
-  await moveDialog.getByRole("button", { name: "Cancel" }).click();
+  await moveDialog.getByRole("button", { name: "Move" }).click();
+  await expect(moveDialog).not.toBeVisible();
+  await expect(
+    page.locator(".session-group").filter({
+      has: page.getByRole("heading", { name: "Movable folder" }),
+    }).getByRole("button", { name: "Organization failure recovery", exact: true }),
+  ).toBeVisible();
 
   page.once("dialog", (dialog) => dialog.dismiss());
   await page.getByRole("button", { name: "Remove folder Movable folder" }).click();
