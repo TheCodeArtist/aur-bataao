@@ -106,6 +106,23 @@ class FakeServer:
             self.run_action()
 
 
+class PlatformOS:
+    """Override the platform name without mutating the process-wide os module."""
+
+    def __init__(self, backing_os, name):
+        self._backing_os = backing_os
+        self.name = name
+
+    def __getattr__(self, name):
+        return getattr(self._backing_os, name)
+
+
+def set_platform(monkeypatch, name):
+    platform_os = PlatformOS(start.os, name)
+    monkeypatch.setattr(start, "os", platform_os)
+    return platform_os
+
+
 @pytest.fixture()
 def runtime_paths(tmp_path, monkeypatch):
     monkeypatch.setattr(start, "RUNTIME_DIR", tmp_path)
@@ -198,7 +215,7 @@ def test_instance_lock_uses_posix_flock(tmp_path, monkeypatch):
 def test_parent_watcher_posix_detects_parent_change_and_closes(monkeypatch):
     reasons = []
     watcher = start.ParentWatcher(100, reasons.append)
-    monkeypatch.setattr(start.os, "name", "posix")
+    set_platform(monkeypatch, "posix")
     monkeypatch.setattr(start.os, "getppid", lambda: 200)
     watcher._watch()
     assert reasons == ["launcher parent exited"]
@@ -213,7 +230,7 @@ def test_parent_watcher_dispatches_windows_and_waits_on_stable_posix_parent(monk
     watcher = start.ParentWatcher(100, Mock())
     windows_watch = Mock()
     watcher._watch_windows = windows_watch
-    monkeypatch.setattr(start.os, "name", "nt")
+    set_platform(monkeypatch, "nt")
     watcher._watch()
     windows_watch.assert_called_once_with()
 
@@ -289,7 +306,7 @@ def test_parent_watcher_windows_ignores_timeouts_until_closed(monkeypatch):
 
 def test_windows_console_handler_non_windows_is_noop(monkeypatch):
     handler = start.WindowsConsoleCloseHandler(Mock(), threading.Event())
-    monkeypatch.setattr(start.os, "name", "posix")
+    set_platform(monkeypatch, "posix")
     handler.install()
     handler.close()
     assert handler.callback is None
@@ -297,7 +314,7 @@ def test_windows_console_handler_non_windows_is_noop(monkeypatch):
 
 def test_windows_console_handler_installs_dispatches_and_uninstalls(monkeypatch):
     kernel = FakeKernel32(SetConsoleCtrlHandler=True)
-    monkeypatch.setattr(start.os, "name", "nt")
+    set_platform(monkeypatch, "nt")
     monkeypatch.setattr(start.ctypes, "WinDLL", lambda *_args, **_kwargs: kernel, raising=False)
     monkeypatch.setattr(
         start.ctypes, "WINFUNCTYPE", lambda *_: lambda function: function, raising=False
@@ -317,7 +334,7 @@ def test_windows_console_handler_installs_dispatches_and_uninstalls(monkeypatch)
 
 def test_windows_console_handler_reports_registration_failure(monkeypatch):
     kernel = FakeKernel32(SetConsoleCtrlHandler=False)
-    monkeypatch.setattr(start.os, "name", "nt")
+    set_platform(monkeypatch, "nt")
     monkeypatch.setattr(start.ctypes, "WinDLL", lambda *_args, **_kwargs: kernel, raising=False)
     monkeypatch.setattr(
         start.ctypes, "WINFUNCTYPE", lambda *_: lambda function: function, raising=False
@@ -341,7 +358,7 @@ def test_windows_job_lifecycle(monkeypatch):
         TerminateJobObject=True,
         CloseHandle=True,
     )
-    monkeypatch.setattr(start.os, "name", "nt")
+    set_platform(monkeypatch, "nt")
     monkeypatch.setattr(start.ctypes, "WinDLL", lambda *_args, **_kwargs: kernel, raising=False)
     job = start.WindowsJob()
     assert job.handle == 55
@@ -354,7 +371,7 @@ def test_windows_job_lifecycle(monkeypatch):
 
 
 def test_windows_job_no_handle_paths(monkeypatch):
-    monkeypatch.setattr(start.os, "name", "posix")
+    set_platform(monkeypatch, "posix")
     job = start.WindowsJob()
     assert job.assign(1) is False
     job.terminate()
@@ -368,7 +385,7 @@ def test_windows_job_creation_failures(monkeypatch, create_result, set_result):
         SetInformationJobObject=set_result,
         CloseHandle=True,
     )
-    monkeypatch.setattr(start.os, "name", "nt")
+    set_platform(monkeypatch, "nt")
     monkeypatch.setattr(start.ctypes, "WinDLL", lambda *_args, **_kwargs: kernel, raising=False)
     monkeypatch.setattr(start.ctypes, "get_last_error", lambda: 5, raising=False)
     monkeypatch.setattr(
@@ -493,7 +510,7 @@ def test_spawn_worker_windows_success_warning_and_cleanup(monkeypatch, tmp_path,
     process = FakeProcess()
     job = Mock(assigned=False)
     job.assign.return_value = False
-    monkeypatch.setattr(start.os, "name", "nt")
+    set_platform(monkeypatch, "nt")
     monkeypatch.setattr(
         start.subprocess, "CREATE_NEW_PROCESS_GROUP", 0x200, raising=False
     )
@@ -518,7 +535,7 @@ def test_spawn_worker_windows_success_warning_and_cleanup(monkeypatch, tmp_path,
 
 def test_spawn_worker_windows_without_job_containment(monkeypatch, tmp_path, capsys):
     process = FakeProcess()
-    monkeypatch.setattr(start.os, "name", "nt")
+    set_platform(monkeypatch, "nt")
     monkeypatch.setattr(
         start.subprocess, "CREATE_NEW_PROCESS_GROUP", 0x200, raising=False
     )
@@ -534,7 +551,7 @@ def test_spawn_worker_failure_without_job_still_reaps_process(
     monkeypatch, tmp_path
 ):
     process = FakeProcess()
-    monkeypatch.setattr(start.os, "name", "nt")
+    set_platform(monkeypatch, "nt")
     monkeypatch.setattr(
         start.subprocess, "CREATE_NEW_PROCESS_GROUP", 0x200, raising=False
     )
@@ -557,7 +574,7 @@ def test_force_stop_worker_uses_job_taskkill_or_process_group(monkeypatch):
     start._force_stop_worker(process, job)
     job.terminate.assert_called_once()
 
-    monkeypatch.setattr(start.os, "name", "nt")
+    set_platform(monkeypatch, "nt")
     monkeypatch.setattr(start.subprocess, "CREATE_NO_WINDOW", 0x8000000, raising=False)
     run = Mock()
     monkeypatch.setattr(start.subprocess, "run", run)
