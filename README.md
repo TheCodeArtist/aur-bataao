@@ -1,257 +1,118 @@
 # Aur Bataao
 
-A compact, single-user task tracker built with Flask, server-rendered HTML,
-vanilla JavaScript, and SQLite.
+Aur Bataao is a self-hosted, single-user task tracker that helps you choose the
+next useful thing to do without losing sight of the full backlog. It runs in a
+browser and keeps its task data in a local SQLite database.
 
-## What it does
+## What you can do
 
-- Opens in the focused **Aur Bataao** view with one actionable task and an
-  instant next suggestion.
-- Keeps the complete backlog available through **View all tasks**.
-- Supports expandable updates and comments.
-- Captures new tasks in a focused dialog.
-- Accepts attachments from the file picker, drag and drop, or clipboard paste.
-- Saves rank changes made by dragging tasks or using the keyboard in the
-  backlog view.
-- Tracks task dependencies and tasks that are **Waiting on** another person as
-  blocking reasons, independently of workflow status.
-- Includes an interactive LLM agent that can inspect tasks, discuss next steps,
-  and propose task changes for explicit approval.
+- Work from a **Focused** view that presents one actionable task or due
+  follow-up at a time. Use **Kuch Aur Bataao** when you want another suggestion.
+- Manage the complete backlog in **All Tasks**, with search, state and label
+  filters, overdue, stalled, and follow-up filters, plus smart or manual rank
+  ordering.
+- Track titles, descriptions, due dates, workflow state, labels, comments, and
+  attachments. Files can be selected, dropped, or pasted from the clipboard.
+- Record task relationships. A task stays blocked until its unfinished blocker
+  tasks are completed.
+- Mark a task as waiting on someone, record follow-ups, and schedule the next
+  reminder for a date or exact time.
+- Switch between light and dark themes; your display and sorting preferences
+  are remembered in the browser.
+- Optionally use an AI agent to inspect tasks, discuss plans, and propose
+  changes. Read-only actions run automatically, while every data change waits
+  for your approval.
 
-## Interactive agent
+Workflow state is deliberately simple: **To do**, **In progress**, or **Done**.
+Being blocked by another task or person is tracked separately, so the original
+workflow state is preserved.
 
-Open **Agent** from the shared view navigation, or browse directly to
-<http://127.0.0.1:8080/?view=agent>. The workspace supports multiple named profiles
-for local or remote OpenAI-compatible endpoints.
+## Get started
 
-An endpoint needs the Chat Completions API for chat. Tool-capable models can
-also inspect and update task data. Profiles without tool support remain usable
-for ordinary conversation. Use **Discover** to search and select a model exposed
-by the endpoint, or enter its model ID manually when discovery is unsupported.
+Aur Bataao requires Python 3.11 or newer. Run these commands from the project
+directory.
 
-Read-only tools run automatically. Every task mutation is shown with its exact
-arguments and pauses until it is approved or rejected. Conversations, runs,
-tool events, failures, token totals, and pending approvals are stored in SQLite
-so an interrupted approval can be resumed.
-
-API keys are never stored in SQLite or returned to the browser. A profile stores
-only the name of an environment variable whose value the server resolves when
-a run starts.
-
-### Waiting-on reminders
-
-When a task is waiting on another person, Aur Bataao records the last follow-up
-and the next reminder. The task keeps its **To do** or **In progress** workflow
-status while the active wait makes it unavailable for regular focused work.
-
-- Reminders can include an exact time.
-- Date-only reminders become due at 9:00 AM in the configured user timezone.
-- Due follow-ups appear as actionable cards in the focused view.
-- Completing a follow-up schedules the next reminder.
-- **No longer waiting** removes only the person-based blocking reason and keeps
-  the task's workflow status. Other task dependencies continue to block it.
-
-Configure this workflow from the **Waiting on** section in a task's expanded
-details. Workflow status remains limited to **To do**, **In progress**, and
-**Done**.
-
-## Run locally (Windows PowerShell)
+### Windows PowerShell
 
 ```powershell
+py -3 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -e .
 .\.venv\Scripts\python.exe start.py
 ```
 
-Open <http://127.0.0.1:8080>. The SQLite database is created at `instance/tasks.sqlite3`.
+### Linux or macOS
 
-### Configuration
-
-Configuration is optional. The available environment variables are:
-
-| Variable | Default | Purpose |
-| --- | --- | --- |
-| `AUR_BATAAO_TIMEZONE` | `Asia/Kolkata` | Timezone used for reminders |
-| `AUR_BATAAO_HOST` | `127.0.0.1` | Server bind address |
-| `AUR_BATAAO_PORT` | `8080` | Server port |
-| `AUR_BATAAO_ATTACHMENTS_DIR` | `instance/attachments` | Attachment storage directory |
-| `AUR_BATAAO_OPEN_BROWSER` | `1` | Set to `0` to skip opening the browser |
-| `AUR_BATAAO_LLM_BASE_URL` | `http://127.0.0.1:1234/v1` | Default compatible API base URL |
-| `AUR_BATAAO_LLM_MODEL` | unset | Default model; setting this seeds the first profile |
-| `AUR_BATAAO_LLM_API_KEY_ENV` | unset | Name of the variable containing the API key |
-| `AUR_BATAAO_LLM_API_KEY` | unset | Direct key for the environment-seeded profile |
-| `AUR_BATAAO_LLM_TIMEOUT_SECONDS` | `60` | LLM timeout, from 1 to 600 seconds |
-| `AUR_BATAAO_LLM_SUPPORTS_TOOLS` | `1` | Set to `0` for a chat-only default model |
-| `AUR_BATAAO_AGENT_MAX_STEPS` | `8` | Maximum model/tool rounds, from 1 to 32 |
-
-Example:
-
-```powershell
-$env:AUR_BATAAO_TIMEZONE = "Asia/Kolkata"
-$env:AUR_BATAAO_HOST = "127.0.0.1"
-$env:AUR_BATAAO_PORT = "8080"
-$env:AUR_BATAAO_ATTACHMENTS_DIR = "D:\AurBataao\attachments"
-.\.venv\Scripts\python.exe start.py
+```bash
+python3 -m venv .venv
+./.venv/bin/python -m pip install -e .
+./.venv/bin/python start.py
 ```
 
-To seed a local endpoint that does not require a key:
+The launcher opens <http://127.0.0.1:8080> in your default browser. Keep its
+terminal open while using the app, and press `Ctrl+C` to stop it cleanly.
 
-```powershell
-$env:AUR_BATAAO_LLM_BASE_URL = "http://127.0.0.1:1234/v1"
-$env:AUR_BATAAO_LLM_MODEL = "your-local-model"
-.\.venv\Scripts\python.exe start.py
-```
+On first launch, Aur Bataao creates its database and attachment directory
+automatically. No account or separate database server is required.
 
-For an authenticated remote endpoint, keep the secret in its own environment
-variable and point the profile at that variable's name:
+## A quick tour
 
-```powershell
-$env:REMOTE_LLM_KEY = "your-secret-key"
-$env:AUR_BATAAO_LLM_BASE_URL = "https://llm.example.com/v1"
-$env:AUR_BATAAO_LLM_MODEL = "your-model"
-$env:AUR_BATAAO_LLM_API_KEY_ENV = "REMOTE_LLM_KEY"
-.\.venv\Scripts\python.exe start.py
-```
+1. Select **Add a Task...**, enter a title, and optionally attach files.
+2. Open a task's details to add context, labels, relationships, comments, or a
+   waiting-on reminder.
+3. Use **Focused** for the next available task. Due follow-ups are surfaced
+   there too.
+4. Use **All Tasks** to search, filter, edit, or reorder the backlog. Select
+   **Sort: Rank** before dragging a task; the rank handle also supports the
+   arrow keys.
+5. Mark work **Done** when complete. Finishing a blocker automatically makes
+   its dependent tasks available when no other blocking reason remains.
 
-If profiles already exist, startup does not replace them. Add or edit profiles
-from **Endpoint settings** in the agent workspace.
+A date-only follow-up becomes due at 9:00 AM in the configured timezone. After
+contacting someone, choose **Followed up, still waiting...** to keep the history
+and schedule the next reminder. Choose **No longer waiting** to remove only the
+person-based block.
 
-Keep the default loopback host unless access is protected by a private network,
-VPN, or authenticated reverse proxy.
+## Optional AI agent
 
-### Attachments and backups
+The **Agent** view works with local or remote endpoints that implement the
+OpenAI-compatible Chat Completions API.
 
-- Maximum file size: 10 MB
-- Maximum attachments per task: 20
-- Maximum upload request size: 25 MB
+1. Open **Agent**, expand **Endpoint settings**, and add an endpoint.
+2. Enter its base URL and model ID, or use **Discover** if the endpoint supports
+   model listing.
+3. If authentication is required, enter the name of an environment variable
+   containing the API key. Set that variable before starting Aur Bataao.
+4. Leave **Endpoint supports tool calling** enabled only for models that can use
+   OpenAI-style tools.
+5. Start a conversation. Conversations are saved and can be arranged in
+   folders.
 
-Backups should include both the SQLite database and the attachments directory.
+Profiles store only the environment variable's name, never the secret value.
+Chat-only models can still be used for conversation, but cannot inspect or
+change task data. A remote provider receives the conversation and any task data
+the agent reads through tools, so choose an endpoint you trust.
 
-## Development
+## Data, limits, and backups
 
-```powershell
-.\.venv\Scripts\python.exe -m pip install -e ".[test]"
-npm ci
-npx playwright install chromium
-git config --local core.hooksPath .githooks
-.\.venv\Scripts\python.exe -m pytest --cov --cov-report=term-missing
-npm test
-```
+By default, application data lives under `instance/`:
 
-Python coverage includes statement and branch coverage across the application
-and fails below 100%. JavaScript unit coverage uses Node's built-in test runner
-and requires 100% lines, branches, and functions across Markdown, networking,
-task decisions, agent decisions, and the browser-coverage reporter.
+- `instance/tasks.sqlite3` contains tasks, labels, comments, relationships,
+  waiting history, endpoint profiles, and agent conversations.
+- `instance/attachments/` contains uploaded files.
 
-DOM entry controllers are verified in Chromium against an isolated Flask
-server, temporary SQLite database, temporary attachments, and a deterministic
-fake model provider. The browser suite fails on workflow regressions, uncaught
-page errors, an uncalled controller function, or an uncovered accountable V8
-range. It reports both the raw V8 result and the 100% accountable result.
+Back up both paths together while the app is stopped. Restoring only the
+database or only the attachments directory can leave attachment records and
+files out of sync.
 
-V8 ranges are browser-version-dependent, so a small number of exact ranges can
-be excluded only with a reviewable reason. These are schema/DOM invariants or
-navigation branches whose observable result is already asserted but whose
-document teardown prevents Chromium from returning the final counter. Broad
-file exclusions are not supported, and an exclusion that becomes stale fails
-the gate. Substantive decisions remain in the 100%-gated logic modules;
-Playwright covers real DOM events, navigation, persistence, rollback, races,
-downloads, accessibility state, and browser-error behavior.
+Each attachment may be up to 10 MB, each task may have up to 20 attachments,
+and one upload request may contain up to 25 MB.
 
-Run the fast unit gate with `npm run test:unit`, a diagnostic browser run with
-`npm run test:e2e`, or the authoritative browser gate with
-`npm run test:e2e:coverage`. `npm test` runs both authoritative JavaScript
-gates.
+Aur Bataao has no login screen or multi-user access controls. Keep the default
+loopback address unless access is protected by a trusted private network, VPN,
+or authenticated reverse proxy.
 
-The app initializes its schema automatically. Task-list loads reconcile active
-date labels at most once per minute, and an open browser checks for local
-midnight once per minute.
+## More setup and troubleshooting
 
-The agent implementation is split into small boundaries:
-
-- `llm_provider.py` adapts the portable OpenAI-compatible API surface.
-- `llm_profiles.py` validates endpoint profiles and resolves key variables.
-- `agent_tools.py` defines the model-visible task capability boundary.
-- `agent_store.py` persists sessions, runs, events, messages, and approvals.
-- `agent_runner.py` owns the bounded tool loop and approval resume behavior.
-
-### Git hooks
-
-Enable the repository hooks once after cloning:
-
-```powershell
-git config --local core.hooksPath .githooks
-```
-
-Git does not copy local configuration during a clone or automatically enable
-repository-provided hooks.
-
-The hooks provide these checks:
-
-- **`pre-commit`:** Rejects staged whitespace errors, conflict markers,
-  generated or local files, and files larger than 100 KiB. It also compiles
-  staged Python to catch syntax errors without writing bytecode.
-- **`commit-msg`:** Limits the subject to 50 characters and description lines
-  to 72 characters. It requires a Conventional Commit prefix and a blank line
-  before an optional description.
-- **`pre-push`:** Runs branch-aware Python coverage and the JavaScript test and
-  browser suites. The push stops if any behavior test fails or either numerical
-  coverage gate falls below 100%.
-
-Supported Conventional Commit types are `build`, `chore`, `ci`, `docs`, `feat`,
-`fix`, `perf`, `refactor`, `revert`, `style`, and `test`. Lowercase scopes and
-breaking-change markers are supported:
-
-```text
-feat(tasks)!: change ranking behavior
-```
-
-Git-generated merge and revert subjects, plus `fixup!` and `squash!` subjects,
-are exempt from the prefix rule.
-
-The hooks look for Python in this order:
-
-1. `.venv\Scripts\python.exe` on Windows
-2. `.venv/bin/python` on Linux and macOS
-3. `python3` or `python` on `PATH`
-
-Commits and pushes fail with a setup message when Python is unavailable. Pushes
-also require Node.js 20.19 or newer, npm, and dependencies installed with
-`npm ci`. Install the managed Chromium build once with
-`npx playwright install chromium`.
-
-When adding or updating hook entry points on Windows, preserve their executable
-mode for other platforms:
-
-```powershell
-git add --chmod=+x .githooks/pre-commit .githooks/commit-msg .githooks/pre-push
-```
-
-Local hooks can be bypassed with `--no-verify`. Authoritative enforcement
-requires the same validation in CI as a mandatory merge check.
-
-## Launcher
-
-Start the launcher with:
-
-```powershell
-.\.venv\Scripts\python.exe start.py
-```
-
-The launcher:
-
-- Opens the app in the default browser unless `AUR_BATAAO_OPEN_BROWSER=0`.
-- Supervises the server worker in the foreground.
-- Shuts down the complete process tree after Ctrl+C or a normal termination
-  signal.
-- Uses a kernel-backed instance lock to prevent duplicate servers.
-- Discards stale PID and control files left by forced termination.
-- Uses a kill-on-close Job Object on Windows.
-- Handles console closure and parent death to prevent orphaned listeners.
-
-To request a graceful shutdown from another terminal:
-
-```powershell
-.\.venv\Scripts\python.exe start.py --stop
-```
-
-If the launcher finds an existing instance, it offers to stop that instance and
-start a fresh one. Declining leaves the running instance untouched.
+See [DEVELOPER.md](DEVELOPER.md) for configuration variables, endpoint
+examples, launcher controls, development setup, API notes, debugging,
+architecture, tests, coverage, and repository checks.
