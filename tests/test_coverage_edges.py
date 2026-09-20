@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from datetime import date, datetime, timezone
 
 import pytest
@@ -16,6 +17,7 @@ from llm_provider import (
     LlmConfig,
     LlmConfigurationError,
     LlmProtocolError,
+    _parse_usage,
 )
 from task_service import (
     SQLITE_INTEGER_MIN,
@@ -171,6 +173,76 @@ def test_agent_runner_resume_and_helper_edges(app, monkeypatch):
     assert _safe_error(RuntimeError("secret"), "secret") == "***"
 
 
+def test_agent_runner_preserves_terminal_state_during_races(app):
+    with app.app_context():
+        db = get_db()
+        profile = create_profile(db)
+        store = AgentStore(db)
+        runner = AgentRunner(db, app.config["TZINFO"], environ={})
+
+        session = store.create_session(profile.id, now=NOW)
+        run = store.create_run(session.id, now=NOW)
+        approval = store.request_approval(
+            run.id,
+            tool_call_id="cancelled-call",
+            tool_name="create_task",
+            arguments={"title": "Never created"},
+            now=NOW,
+        )
+        store.transition_run(run.id, "cancelled", now=NOW)
+        db.commit()
+        with pytest.raises(ValueError, match="not waiting"):
+            runner.decide(approval.id, True, now=NOW)
+
+        session = store.create_session(profile.id, now=NOW)
+        run = store.create_run(session.id, now=NOW)
+        approval = store.request_approval(
+            run.id,
+            tool_call_id="consumed-call",
+            tool_name="create_task",
+            arguments={"title": "Already consumed"},
+            now=NOW,
+        )
+        store.decide_approval(approval.id, True, now=NOW)
+        store.mark_approval_consumed(approval.id, now=NOW)
+        db.commit()
+        with pytest.raises(ValueError, match="no decided approvals"):
+            runner.resume(run.id, now=NOW)
+
+        session = store.create_session(profile.id, now=NOW)
+
+        def cancelling_factory(_config):
+            active = store.runs_for_session(session.id)[0]
+            store.transition_run(active.id, "cancelled", now=NOW)
+            db.commit()
+            return Provider([])
+
+        outcome = AgentRunner(
+            db,
+            app.config["TZINFO"],
+            environ={},
+            provider_factory=cancelling_factory,
+        ).start(session.id, "Cancel before completion", now=NOW)
+        assert outcome.run.status == "cancelled"
+
+        session = store.create_session(profile.id, now=NOW)
+
+        def cancelling_failure(_config):
+            active = store.runs_for_session(session.id)[0]
+            store.transition_run(active.id, "cancelled", now=NOW)
+            db.commit()
+            raise RuntimeError("late provider failure")
+
+        outcome = AgentRunner(
+            db,
+            app.config["TZINFO"],
+            environ={},
+            provider_factory=cancelling_failure,
+        ).start(session.id, "Preserve cancellation", now=NOW)
+        assert outcome.run.status == "cancelled"
+        assert outcome.run.error is None
+
+
 def test_agent_store_validation_and_not_found_edges(app):
     with app.app_context():
         db = get_db()
@@ -186,6 +258,8 @@ def test_agent_store_validation_and_not_found_edges(app):
             store.approval("missing")
 
         folder = store.create_folder("Folder", now=NOW)
+        with pytest.raises(ValueError, match="Folder name"):
+            store.create_folder(" ", now=NOW)
         with pytest.raises(ValueError, match="already exists"):
             store.create_folder("Folder", now=NOW)
         with pytest.raises(ValueError, match="role"):
@@ -194,6 +268,26 @@ def test_agent_store_validation_and_not_found_edges(app):
             store.append_message(session.id, {"role": "user", "content": {1}}, now=NOW)
 
         other = store.create_session(profile.id, now=NOW)
+        run = store.create_run(session.id, now=NOW)
+        with pytest.raises(ValueError, match="decided tool call"):
+            approval = store.request_approval(
+                run.id,
+                tool_call_id="pending",
+                tool_name="create_task",
+                arguments={"title": "Pending"},
+                now=NOW,
+            )
+            store.mark_approval_consumed(approval.id, now=NOW)
+        store.transition_run(run.id, "cancelled", now=NOW)
+
+        db.execute(
+            "UPDATE agent_sessions SET status = 'archived' WHERE id = ?",
+            (other.id,),
+        )
+        with pytest.raises(ValueError, match="archived"):
+            store.create_run(other.id, now=NOW)
+
+        session = store.create_session(profile.id, now=NOW)
         run = store.create_run(session.id, now=NOW)
         with pytest.raises(ValueError, match="does not belong"):
             store.append_message(other.id, {"role": "user", "content": "x"}, run_id=run.id)
@@ -224,6 +318,7 @@ def test_profile_duplicate_and_validation_edges(app):
         db = get_db()
         store = LlmProfileStore(db, environ={})
         first = create_profile(db)
+        assert store.provider_config(first.id).api_key is None
         with pytest.raises(ValueError, match="already in use"):
             create_profile(db)
         second = create_profile(db, name="Second")
@@ -241,6 +336,49 @@ def test_profile_duplicate_and_validation_edges(app):
         for values in invalid:
             with pytest.raises(ValueError):
                 store.update(first.id, values, now=NOW)
+
+        with pytest.raises(ValueError, match="Unsupported field"):
+            store.create({"unknown": True}, now=NOW)
+
+
+def test_profile_store_preserves_unexpected_integrity_errors(app):
+    with app.app_context():
+        db = get_db()
+        store = LlmProfileStore(db, environ={})
+        profile = create_profile(db)
+
+        db.execute(
+            """
+            CREATE TRIGGER reject_profile_insert
+            BEFORE INSERT ON llm_profiles
+            BEGIN
+                SELECT RAISE(ABORT, 'synthetic insert rejection');
+            END
+            """
+        )
+        with pytest.raises(sqlite3.IntegrityError, match="synthetic insert rejection"):
+            store.create(
+                {
+                    "name": "Rejected",
+                    "base_url": "http://localhost:1234/v1",
+                    "model": "model",
+                },
+                now=NOW,
+            )
+        db.execute("DROP TRIGGER reject_profile_insert")
+
+        db.execute(
+            """
+            CREATE TRIGGER reject_profile_update
+            BEFORE UPDATE ON llm_profiles
+            BEGIN
+                SELECT RAISE(ABORT, 'synthetic update rejection');
+            END
+            """
+        )
+        with pytest.raises(sqlite3.IntegrityError, match="synthetic update rejection"):
+            store.update(profile.id, {"model": "rejected-model"}, now=NOW)
+        assert store.get(profile.id).model == "fake-model"
 
 
 @pytest.mark.parametrize(
@@ -284,11 +422,17 @@ def test_provider_protocol_edges():
         with pytest.raises(LlmProtocolError, match=match):
             provider.complete([{"role": "user", "content": "x"}])
 
+    assert _parse_usage(
+        {"prompt_tokens": True, "completion_tokens": "2", "total_tokens": None}
+    ) == {}
+
 
 def test_all_agent_tool_mutations_and_validation(app):
     with app.app_context():
         db = get_db()
         registry = TaskToolRegistry(db, app.config["TZINFO"])
+        with pytest.raises(ValueError, match="must be an object"):
+            registry.execute("list_tasks", [])
         first = registry.execute("create_task", {"title": "First", "description": "Body"}, now=NOW)
         second = registry.execute("create_task", {"title": "Second"}, now=NOW)
         task_id = first["id"]

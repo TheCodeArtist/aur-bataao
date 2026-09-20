@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import logging
+import runpy
 import signal
 import subprocess
+import sys
 import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -171,6 +174,27 @@ def test_instance_lock_releases_lock_when_pid_write_fails(runtime_paths, monkeyp
     assert lock.file is None
 
 
+def test_instance_lock_uses_posix_flock(tmp_path, monkeypatch):
+    lock_path = tmp_path / "posix.lock"
+    flock = Mock()
+    fake_fcntl = SimpleNamespace(
+        LOCK_EX=1,
+        LOCK_NB=2,
+        LOCK_UN=4,
+        flock=flock,
+    )
+    monkeypatch.setattr(
+        start, "os", SimpleNamespace(name="posix", getpid=lambda: 1234)
+    )
+    monkeypatch.setitem(sys.modules, "fcntl", fake_fcntl)
+
+    with start.InstanceLock(lock_path, pid_path=None):
+        pass
+
+    assert flock.call_args_list[0].args[1] == 3
+    assert flock.call_args_list[1].args[1] == 4
+
+
 def test_parent_watcher_posix_detects_parent_change_and_closes(monkeypatch):
     reasons = []
     watcher = start.ParentWatcher(100, reasons.append)
@@ -183,6 +207,23 @@ def test_parent_watcher_posix_detects_parent_change_and_closes(monkeypatch):
     watcher.thread = thread
     watcher.close()
     thread.join.assert_called_once_with(timeout=0.5)
+
+
+def test_parent_watcher_dispatches_windows_and_waits_on_stable_posix_parent(monkeypatch):
+    watcher = start.ParentWatcher(100, Mock())
+    windows_watch = Mock()
+    watcher._watch_windows = windows_watch
+    monkeypatch.setattr(start.os, "name", "nt")
+    watcher._watch()
+    windows_watch.assert_called_once_with()
+
+    monkeypatch.setattr(
+        start, "os", SimpleNamespace(name="posix", getppid=lambda: 100)
+    )
+    watcher = start.ParentWatcher(100, Mock())
+    watcher.done.wait = Mock(side_effect=[False, True])
+    watcher._watch()
+    watcher.on_exit.assert_not_called()
 
 
 def test_parent_watcher_start_and_current_thread_close(monkeypatch):
@@ -225,6 +266,25 @@ def test_parent_watcher_windows_paths(monkeypatch, handle, error, wait_results, 
     watcher._watch_windows()
     assert watcher.on_exit.call_args_list == [((reason,), {}) for reason in expected]
     assert watcher.process_handle is None
+
+
+def test_parent_watcher_windows_ignores_timeouts_until_closed(monkeypatch):
+    kernel = FakeKernel32(
+        OpenProcess=44,
+        WaitForSingleObject=258,
+        CloseHandle=True,
+    )
+    monkeypatch.setattr(
+        start.ctypes, "WinDLL", lambda *_args, **_kwargs: kernel, raising=False
+    )
+    watcher = start.ParentWatcher(10, Mock())
+    watcher.done.is_set = Mock(side_effect=[False, True])
+
+    watcher._watch_windows()
+
+    watcher.on_exit.assert_not_called()
+    assert kernel.WaitForSingleObject.calls == [(44, 250)]
+    assert kernel.CloseHandle.calls == [(44,)]
 
 
 def test_windows_console_handler_non_windows_is_noop(monkeypatch):
@@ -386,6 +446,14 @@ def test_request_stop_outcomes(runtime_paths, monkeypatch, capsys):
     assert start.request_stop() == 1
     assert "did not stop" in capsys.readouterr().err
 
+    running = Mock(side_effect=[True, True, False, False])
+    sleep = Mock()
+    monkeypatch.setattr(start, "instance_is_running", running)
+    monkeypatch.setattr(start.time, "monotonic", Mock(side_effect=[0, 1]))
+    monkeypatch.setattr(start.time, "sleep", sleep)
+    assert start.request_stop() == 0
+    sleep.assert_called_once_with(0.1)
+
 
 def test_confirm_restart_handles_interrupted_input(monkeypatch, capsys):
     monkeypatch.setattr("builtins.input", Mock(side_effect=EOFError))
@@ -460,6 +528,27 @@ def test_spawn_worker_windows_without_job_containment(monkeypatch, tmp_path, cap
     _, job = start._spawn_worker("token", tmp_path / "stop", tmp_path / "ready")
     assert job is None
     assert "containment is unavailable" in capsys.readouterr().err
+
+
+def test_spawn_worker_failure_without_job_still_reaps_process(
+    monkeypatch, tmp_path
+):
+    process = FakeProcess()
+    monkeypatch.setattr(start.os, "name", "nt")
+    monkeypatch.setattr(
+        start.subprocess, "CREATE_NEW_PROCESS_GROUP", 0x200, raising=False
+    )
+    monkeypatch.setattr(start, "WindowsJob", Mock(side_effect=OSError("unavailable")))
+    monkeypatch.setattr(start.subprocess, "Popen", Mock(return_value=process))
+    monkeypatch.setattr(
+        start, "_resume_windows_process", Mock(side_effect=OSError("resume failed"))
+    )
+
+    with pytest.raises(OSError, match="resume failed"):
+        start._spawn_worker("token", tmp_path / "stop", tmp_path / "ready")
+
+    assert process.killed is True
+    assert process.wait_calls == [5]
 
 
 def test_force_stop_worker_uses_job_taskkill_or_process_group(monkeypatch):
@@ -561,6 +650,49 @@ def test_worker_main_runs_and_cleans_up(monkeypatch, tmp_path):
     start.wasyncore.close_all.assert_called()
 
 
+def test_worker_stop_watcher_runs_without_sigbreak(monkeypatch, tmp_path, capsys):
+    stop_path, ready_path = _worker_environment(monkeypatch, tmp_path)
+    stop_path.write_text("stop", encoding="utf-8")
+    fake_signal = SimpleNamespace(SIGINT=2, SIGTERM=15, signal=Mock())
+    monkeypatch.setattr(start, "signal", fake_signal)
+
+    class ImmediateThread:
+        def __init__(self, *, target, **_kwargs):
+            self.target = target
+
+        def start(self):
+            self.target()
+
+    monkeypatch.setattr(start.threading, "Thread", ImmediateThread)
+    server = FakeServer()
+    monkeypatch.setattr(start, "create_server", Mock(return_value=server))
+
+    assert start._worker_main() == 0
+    assert "stop request" in capsys.readouterr().out
+    assert not stop_path.exists()
+    assert not ready_path.exists()
+
+
+def test_worker_stop_watcher_waits_until_cleanup(monkeypatch, tmp_path):
+    real_thread = threading.Thread
+    _stop_path, _ready_path = _worker_environment(monkeypatch, tmp_path)
+    threads = []
+
+    def create_thread(**kwargs):
+        thread = real_thread(**kwargs)
+        threads.append(thread)
+        return thread
+
+    monkeypatch.setattr(start.threading, "Thread", create_thread)
+    server = FakeServer(lambda: time.sleep(0.15))
+    monkeypatch.setattr(start, "create_server", Mock(return_value=server))
+
+    assert start._worker_main() == 0
+    for thread in threads:
+        thread.join(timeout=1)
+        assert not thread.is_alive()
+
+
 def _supervisor_fakes(monkeypatch, runtime_paths, process):
     monkeypatch.setattr(start, "_spawn_worker", Mock(return_value=(process, None)))
     monkeypatch.setattr(start, "_stop_worker", Mock())
@@ -625,6 +757,92 @@ def test_supervisor_handles_early_exit_stop_and_timeout(monkeypatch, runtime_pat
     assert "did not become ready" in capsys.readouterr().err
 
 
+def test_supervisor_signal_handler_without_sigbreak(monkeypatch, runtime_paths, capsys):
+    process = FakeProcess(polls=[None, None, 0], returncode=0)
+    _supervisor_fakes(monkeypatch, runtime_paths, process)
+    handlers = {}
+    fake_signal = SimpleNamespace(
+        SIGINT=2,
+        SIGTERM=15,
+        signal=lambda signum, callback: handlers.setdefault(signum, callback),
+    )
+    monkeypatch.setattr(start, "signal", fake_signal)
+    original_spawn = start._spawn_worker
+
+    def spawn_and_signal(*args):
+        result = original_spawn(*args)
+        handlers[fake_signal.SIGTERM](fake_signal.SIGTERM, None)
+        return result
+
+    monkeypatch.setattr(start, "_spawn_worker", spawn_and_signal)
+
+    assert start._supervisor_main("127.0.0.1", 8080) == 0
+    assert "signal 15" in capsys.readouterr().out
+    start._stop_worker.assert_called()
+
+
+def test_supervisor_waits_for_ready_skips_browser_and_honors_stop_file(
+    monkeypatch, runtime_paths
+):
+    class StopFileProcess(FakeProcess):
+        def __init__(self):
+            super().__init__(returncode=0)
+            self.poll_count = 0
+
+        def poll(self):
+            self.poll_count += 1
+            if self.poll_count == 2:
+                start.STOP_FILE.write_text("stop", encoding="utf-8")
+            if self.poll_count >= 4:
+                self.returncode = 0
+                return 0
+            return None
+
+    process = StopFileProcess()
+    _supervisor_fakes(monkeypatch, runtime_paths, process)
+    ready_path = None
+    original_spawn = start._spawn_worker
+
+    def capture_ready(*args):
+        nonlocal ready_path
+        ready_path = args[2]
+        return original_spawn(*args)
+
+    def become_ready(_delay):
+        ready_path.write_text("ready", encoding="utf-8")
+
+    monkeypatch.setattr(start, "_spawn_worker", capture_ready)
+    monkeypatch.setattr(start.time, "monotonic", Mock(side_effect=[0, 1]))
+    monkeypatch.setattr(start.time, "sleep", become_ready)
+    monkeypatch.setenv("AUR_BATAAO_OPEN_BROWSER", "0")
+
+    assert start._supervisor_main("127.0.0.1", 8080) == 0
+    start.webbrowser.open.assert_not_called()
+    start._stop_worker.assert_called()
+
+
+def test_supervisor_cleans_live_worker_and_job_after_startup_exception(
+    monkeypatch, runtime_paths
+):
+    process = FakeProcess(polls=[None], returncode=0)
+    job = Mock()
+    _supervisor_fakes(monkeypatch, runtime_paths, process)
+    monkeypatch.setattr(start, "_spawn_worker", Mock(return_value=(process, job)))
+    monkeypatch.setattr(
+        start.time, "monotonic", Mock(side_effect=RuntimeError("clock failed"))
+    )
+
+    with pytest.raises(RuntimeError, match="clock failed"):
+        start._supervisor_main("127.0.0.1", 8080)
+
+    start._stop_worker.assert_called_once_with(
+        process,
+        job,
+        start._stop_worker.call_args.args[2],
+    )
+    job.close.assert_called_once_with()
+
+
 def test_main_dispatch_and_restart_paths(monkeypatch, capsys):
     monkeypatch.setattr(start.sys, "argv", ["start.py", "--worker"])
     monkeypatch.setattr(start, "_worker_main", Mock(return_value=7))
@@ -681,3 +899,10 @@ def test_main_restarts_after_stopping_existing_instance(monkeypatch, capsys):
     monkeypatch.setattr(start, "_supervisor_main", Mock(return_value=2))
     assert start.main() == 2
     assert "Launching a new" in capsys.readouterr().out
+
+
+def test_script_entrypoint_dispatches_main(monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["start.py", "unsupported"])
+    with pytest.raises(SystemExit) as exc:
+        runpy.run_path(start.__file__, run_name="__main__")
+    assert exc.value.code == 2
