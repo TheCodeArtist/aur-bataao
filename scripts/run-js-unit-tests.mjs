@@ -13,6 +13,7 @@ const includedSources = [
   "static/task_logic.js",
   "static/agent_logic.js",
   "tests-e2e/browser_coverage.js",
+  "tests-e2e/browser_coverage_reporter.js",
   "tests-e2e/unit_coverage_gate.js",
 ];
 const testFiles = readdirSync(path.join(root, "tests-js"))

@@ -1,29 +1,22 @@
 import { expect, test as base } from "@playwright/test";
 
-import {
-  assertBrowserCoverage,
-  formatBrowserCoverage,
-  summarizeBrowserCoverage,
-} from "./browser_coverage.js";
+import { BROWSER_COVERAGE_ATTACHMENT } from "./browser_coverage_reporter.js";
 
 
 const test = base.extend({
-  browserCoverage: [async ({}, use) => {
-    const entries = [];
-    await use(entries);
-    const summaries = summarizeBrowserCoverage(entries);
-    console.log(formatBrowserCoverage(summaries));
-    if (
-      process.env.BROWSER_COVERAGE_GATE === "1"
-      || process.env.npm_lifecycle_event === "test:e2e:coverage"
-    ) {
-      assertBrowserCoverage(summaries);
-    }
-  }, { scope: "worker" }],
-  collectBrowserCoverage: [async ({ page, browserCoverage }, use) => {
+  collectBrowserCoverage: [async ({ page }, use, testInfo) => {
     await page.coverage.startJSCoverage({ resetOnNavigation: false });
-    await use();
-    browserCoverage.push(...await page.coverage.stopJSCoverage());
+    try {
+      await use();
+    } finally {
+      const entries = (await page.coverage.stopJSCoverage()).filter((entry) => (
+        ["/static/app.js", "/static/agent.js"].includes(new URL(entry.url).pathname)
+      ));
+      await testInfo.attach(BROWSER_COVERAGE_ATTACHMENT, {
+        body: Buffer.from(JSON.stringify(entries)),
+        contentType: "application/json",
+      });
+    }
   }, { auto: true }],
   pageErrors: [async ({ page }, use) => {
     const errors = [];
@@ -44,6 +37,29 @@ async function createTask(request, title) {
   const response = await request.post("/api/tasks", { data: { title } });
   expect(response.status()).toBe(201);
   return (await response.json()).task;
+}
+
+
+async function createAgentConversation(page, title) {
+  const input = page.getByLabel("Message the agent");
+  await input.fill(title);
+  await input.press("Enter");
+  await expect(page.locator("#message-list")).toContainText("browser test agent is ready");
+  return page.getByRole("button", { name: title, exact: true });
+}
+
+
+async function createAgentFolder(page, name) {
+  const created = page.waitForResponse((response) => (
+    response.request().method() === "POST"
+    && response.url().endsWith("/api/agent/folders")
+  ));
+  page.once("dialog", (dialog) => dialog.accept(name));
+  await page.getByRole("button", { name: "+ Folder" }).click();
+  expect((await created).ok()).toBeTruthy();
+  const heading = page.getByRole("heading", { name });
+  await expect(heading).toBeVisible();
+  return heading;
 }
 
 
@@ -852,7 +868,6 @@ test("submits messages by keyboard and safely cancels organization actions", asy
   await page.keyboard.press("Escape");
   await expect(moveDialog).not.toBeVisible();
   await page.locator("#move-conversation-form").evaluate((form) => form.requestSubmit());
-  await page.waitForLoadState("networkidle");
   const sessions = await (await request.get("/api/agent/sessions")).json();
   const session = sessions.sessions.find((item) => item.title === "Keyboard conversation");
   expect(session.folder_id).toBeNull();
@@ -1334,14 +1349,10 @@ test("rolls ranking back on failure and ignores incomplete drag operations", asy
 });
 
 
-test("recovers from Agent organization failures and no-op actions", async ({ page }) => {
+test("reports Agent folder and conversation load failures", async ({ page }) => {
   await page.goto("/?view=agent");
-  const input = page.getByLabel("Message the agent");
   await page.locator("#composer").evaluate((form) => form.requestSubmit());
-  await input.fill("Organization failure recovery");
-  await input.press("Enter");
-  await expect(page.locator("#message-list")).toContainText("browser test agent is ready");
-  const session = page.getByRole("button", { name: "Organization failure recovery", exact: true });
+  const session = await createAgentConversation(page, "Organization failure recovery");
   await session.click();
   await session.click();
 
@@ -1361,22 +1372,55 @@ test("recovers from Agent organization failures and no-op actions", async ({ pag
   await expect(page.getByRole("alert")).toContainText("Synthetic folder conflict");
   await page.unroute("**/api/agent/folders");
 
-  page.once("dialog", (dialog) => dialog.accept("Movable folder"));
-  await page.getByRole("button", { name: "+ Folder" }).click();
+  const folderHeading = await createAgentFolder(page, "Movable folder");
+  page.once("dialog", (dialog) => dialog.dismiss());
+  await page.getByRole("button", { name: "Remove folder Movable folder" }).click();
+  await expect(folderHeading).toBeVisible();
+
+  await page.route("**/api/agent/folders/*", async (route) => {
+    await route.fulfill({
+      status: 409,
+      contentType: "application/json",
+      body: JSON.stringify({ error: "Synthetic folder removal conflict" }),
+    });
+  });
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "Remove folder Movable folder" }).click();
+  await expect(page.getByRole("alert")).toContainText("Synthetic folder removal conflict");
+  await page.unroute("**/api/agent/folders/*");
+
+  await page.route("**/api/agent/sessions/*", async (route) => {
+    await route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({ error: "Synthetic conversation load failure" }),
+    });
+  });
+  await session.click();
+  await expect(page.getByRole("alert")).toContainText("Synthetic conversation load failure");
+});
+
+
+test("guards an in-flight Agent conversation move", async ({ page }) => {
+  await page.goto("/?view=agent");
+  await createAgentConversation(page, "Move locking recovery");
+  await createAgentFolder(page, "Movable folder");
+
   const moveButton = page.getByRole("button", {
-    name: "Move Organization failure recovery to a folder",
+    name: "Move Move locking recovery to a folder",
     exact: true,
   });
-  await moveButton.click();
   const moveDialog = page.locator("#move-conversation-dialog");
+  await moveButton.click();
   await moveDialog.getByLabel("Folder").selectOption({ label: "Movable folder" });
   await moveDialog.getByRole("button", { name: "Move" }).click();
   await expect(moveDialog).not.toBeVisible();
   await expect(
     page.locator(".session-group").filter({
       has: page.getByRole("heading", { name: "Movable folder" }),
-    }).getByRole("button", { name: "Organization failure recovery", exact: true }),
+    }).getByRole("button", { name: "Move locking recovery", exact: true }),
   ).toBeVisible();
+
   await moveButton.click();
   await expect(moveDialog.getByLabel("Folder")).toHaveValue(/\d+/);
   await moveDialog.getByLabel("Folder").selectOption("");
@@ -1395,21 +1439,36 @@ test("recovers from Agent organization failures and no-op actions", async ({ pag
     && /\/api\/agent\/sessions\/[^/]+$/.test(new URL(response.url()).pathname)
   ));
   const moveSubmit = moveDialog.getByRole("button", { name: "Move" });
-  await moveSubmit.evaluate((button) => {
-    button.click();
-    button.closest("form").requestSubmit();
-  });
-  await expect.poll(() => moveRequests).toBe(1);
-  await expect(moveSubmit).toBeDisabled();
-  await expect(moveDialog.getByRole("button", { name: "Cancel" })).toBeDisabled();
-  await page.keyboard.press("Escape");
-  await expect(moveDialog).toBeVisible();
-  releaseMove();
-  expect((await moved).ok()).toBeTruthy();
+  try {
+    await moveSubmit.evaluate((button) => {
+      button.click();
+      button.closest("form").requestSubmit();
+    });
+    await expect.poll(() => moveRequests).toBe(1);
+    await expect(moveSubmit).toBeDisabled();
+    await expect(moveDialog.getByRole("button", { name: "Cancel" })).toBeDisabled();
+    await page.keyboard.press("Escape");
+    await expect(moveDialog).toBeVisible();
+    releaseMove();
+    expect((await moved).ok()).toBeTruthy();
+  } finally {
+    releaseMove();
+    await page.unroute("**/api/agent/sessions/*");
+  }
   await expect(moveDialog).not.toBeVisible();
-  await page.waitForLoadState("networkidle");
   expect(moveRequests).toBe(1);
-  await page.unroute("**/api/agent/sessions/*");
+});
+
+
+test("recovers after an Agent conversation move fails", async ({ page }) => {
+  await page.goto("/?view=agent");
+  await createAgentConversation(page, "Move failure recovery");
+  await createAgentFolder(page, "Movable folder");
+  const moveButton = page.getByRole("button", {
+    name: "Move Move failure recovery to a folder",
+    exact: true,
+  });
+  const moveDialog = page.locator("#move-conversation-dialog");
 
   await page.route("**/api/agent/sessions/*", async (route) => {
     if (route.request().method() === "PATCH") {
@@ -1430,58 +1489,29 @@ test("recovers from Agent organization failures and no-op actions", async ({ pag
   await expect(moveDialog.getByRole("button", { name: "Move" })).toBeEnabled();
   await expect(moveDialog.getByRole("button", { name: "Cancel" })).toBeEnabled();
   await page.unroute("**/api/agent/sessions/*");
+
   await moveDialog.getByRole("button", { name: "Move" }).click();
   await expect(moveDialog).not.toBeVisible();
   await expect(
     page.locator(".session-group").filter({
       has: page.getByRole("heading", { name: "Movable folder" }),
-    }).getByRole("button", { name: "Organization failure recovery", exact: true }),
+    }).getByRole("button", { name: "Move failure recovery", exact: true }),
   ).toBeVisible();
-
-  page.once("dialog", (dialog) => dialog.dismiss());
-  await page.getByRole("button", { name: "Remove folder Movable folder" }).click();
-  await expect(page.getByRole("heading", { name: "Movable folder" })).toBeVisible();
-  await page.route("**/api/agent/folders/*", async (route) => {
-    await route.fulfill({
-      status: 409,
-      contentType: "application/json",
-      body: JSON.stringify({ error: "Synthetic folder removal conflict" }),
-    });
-  });
-  page.once("dialog", (dialog) => dialog.accept());
-  await page.getByRole("button", { name: "Remove folder Movable folder" }).click();
-  await expect(page.getByRole("alert")).toContainText("Synthetic folder removal conflict");
-
-  await page.route("**/api/agent/sessions/*", async (route) => {
-    await route.fulfill({
-      status: 503,
-      contentType: "application/json",
-      body: JSON.stringify({ error: "Synthetic conversation load failure" }),
-    });
-  });
-  await session.click();
-  await expect(page.getByRole("alert")).toContainText("Synthetic conversation load failure");
 });
 
 
-test("updates focus and counters after dynamic task changes", async ({ page, request }) => {
+test("updates focus after dynamic task changes", async ({ page, request }) => {
   const active = await createTask(request, "Dynamic active task");
-  const waiting = await createTask(request, "Dynamic waiting task");
-  const another = await createTask(request, "Another dynamic task");
+  await createTask(request, "Another dynamic task");
   expect((await request.patch(`/api/tasks/${active.id}`, {
     data: { status: "in_progress", due_date: "2000-01-01" },
   })).ok()).toBeTruthy();
-  expect((await request.put(`/api/tasks/${waiting.id}/waiting`, {
-    data: { person_name: "Nia", next_follow_up_on: "2099-03-01" },
-  })).ok()).toBeTruthy();
-  expect((await request.post(`/api/tasks/${active.id}/labels`, { data: { name: "alpha" } })).ok()).toBeTruthy();
-  expect((await request.post(`/api/tasks/${active.id}/labels`, { data: { name: "beta" } })).ok()).toBeTruthy();
-  expect((await request.post(`/api/tasks/${active.id}/labels`, { data: { name: "gamma" } })).ok()).toBeTruthy();
 
   await page.goto("/?view=focus");
   await page.locator("#aur-bataao-button").dispatchEvent("click");
-  const activeRow = page.locator(`.task-row[data-task-id="${active.id}"]`);
-  const focusRow = page.locator(".task-row.is-focus-task");
+  const focusTaskId = await page.locator(".task-row.is-focus-task").getAttribute("data-task-id");
+  expect(focusTaskId).toBeTruthy();
+  const focusRow = page.locator(`.task-row[data-task-id="${focusTaskId}"]`);
   await page.locator(".task-row:not(.is-focus-task)").evaluateAll((rows) => {
     rows.forEach((row) => { row.dataset.actionable = "false"; });
   });
@@ -1490,8 +1520,13 @@ test("updates focus and counters after dynamic task changes", async ({ page, req
     name: "Expand task details and editing controls",
   }).click();
   const focusTitle = focusRow.locator(".focus-title-editor");
+  const titleUpdated = page.waitForResponse((response) => (
+    response.request().method() === "PATCH"
+    && response.url().endsWith(`/api/tasks/${focusTaskId}`)
+  ));
   await focusTitle.fill("Dynamic focus updated");
   await focusTitle.blur();
+  expect((await titleUpdated).ok()).toBeTruthy();
   await expect(focusRow.locator(".focus-task-title")).toHaveText("Dynamic focus updated");
   await expect(page.locator("#active-task-count")).toContainText("1 in progress");
   const focusReturnView = focusRow.locator(".return-view-field").first();
@@ -1501,9 +1536,22 @@ test("updates focus and counters after dynamic task changes", async ({ page, req
   await expect(focusReturnView).toHaveValue("focus");
 
   await page.getByRole("link", { name: "Switch to All Tasks" }).click();
+  const activeRow = page.locator(`.task-row[data-task-id="${active.id}"]`);
   if (await activeRow.locator(".task-details").isHidden()) {
     await activeRow.getByRole("button", { name: "Show task details" }).click();
   }
+});
+
+
+test("updates labels after dynamic task changes", async ({ page, request }) => {
+  const active = await createTask(request, "Dynamic labelled task");
+  expect((await request.post(`/api/tasks/${active.id}/labels`, { data: { name: "alpha" } })).ok()).toBeTruthy();
+  expect((await request.post(`/api/tasks/${active.id}/labels`, { data: { name: "beta" } })).ok()).toBeTruthy();
+  expect((await request.post(`/api/tasks/${active.id}/labels`, { data: { name: "gamma" } })).ok()).toBeTruthy();
+  await page.goto("/?view=manage");
+
+  const activeRow = page.locator(`.task-row[data-task-id="${active.id}"]`);
+  await activeRow.getByRole("button", { name: "Show task details" }).click();
   const picker = activeRow.locator(".task-label-picker");
   await picker.locator("summary").click();
   await page.locator("#label-filter .multi-select-option").filter({
@@ -1519,20 +1567,39 @@ test("updates focus and counters after dynamic task changes", async ({ page, req
   await picker.locator("summary").click();
   await picker.locator('[data-task-label-option][data-label-name="beta"]').uncheck();
   await expect(activeRow.getByRole("button", { name: "Filter tasks by gamma" })).toBeVisible();
+});
 
+
+test("updates counters and return views after dynamic task changes", async ({ page, request }) => {
+  const active = await createTask(request, "Dynamic active task");
+  const waiting = await createTask(request, "Dynamic waiting task");
+  const another = await createTask(request, "Another dynamic task");
+  expect((await request.patch(`/api/tasks/${active.id}`, {
+    data: { status: "in_progress", due_date: "2000-01-01" },
+  })).ok()).toBeTruthy();
+  expect((await request.put(`/api/tasks/${waiting.id}/waiting`, {
+    data: { person_name: "Nia", next_follow_up_on: "2099-03-01" },
+  })).ok()).toBeTruthy();
+  await page.goto("/?view=manage");
+
+  const activeRow = page.locator(`.task-row[data-task-id="${active.id}"]`);
   const waitingRow = page.locator(`.task-row[data-task-id="${waiting.id}"]`);
+  await activeRow.getByRole("button", { name: "Show task details" }).click();
   await waitingRow.getByRole("button", { name: "Show task details" }).click();
   const waitingTitle = waitingRow.locator(".task-title");
+  const waitingUpdated = page.waitForResponse((response) => (
+    response.request().method() === "PATCH"
+    && response.url().endsWith(`/api/tasks/${waiting.id}`)
+  ));
   await waitingTitle.fill("Dynamic waiting updated");
   await waitingTitle.blur();
-  await expect(waitingRow).toHaveAttribute("data-waiting-on", "Nia");
+  expect((await waitingUpdated).ok()).toBeTruthy();
+  await expect(waitingRow).toHaveAttribute("data-title", "dynamic waiting updated");
 
-  await page.evaluate((taskId) => {
-    document.querySelector(`.task-row[data-task-id="${taskId}"]`).dataset.followUpDue = "true";
-  }, waiting.id);
-  await page.evaluate((taskId) => {
-    document.querySelector(`.task-row[data-task-id="${taskId}"]`).dataset.followUpDue = "true";
-  }, another.id);
+  await page.evaluate(({ waitingId, anotherId }) => {
+    document.querySelector(`.task-row[data-task-id="${waitingId}"]`).dataset.followUpDue = "true";
+    document.querySelector(`.task-row[data-task-id="${anotherId}"]`).dataset.followUpDue = "true";
+  }, { waitingId: waiting.id, anotherId: another.id });
   const description = activeRow.locator("textarea[data-field='description']");
   await description.evaluate((control) => { delete control.dataset.previous; });
   await description.fill("Refresh live counts");

@@ -45,15 +45,21 @@ def test_javascript_test_policy_cannot_drift_silently():
         "static/task_logic.js",
         "static/agent_logic.js",
         "tests-e2e/browser_coverage.js",
+        "tests-e2e/browser_coverage_reporter.js",
         "tests-e2e/unit_coverage_gate.js",
     ):
         assert source in unit_runner
 
     assert "coverageGateError" in unit_runner
 
-    browser_suite = read_text("tests-e2e/app.spec.js")
-    assert 'process.env.npm_lifecycle_event === "test:e2e:coverage"' in browser_suite
-    assert "assertBrowserCoverage(summaries)" in browser_suite
+    browser_config = read_text("playwright.config.js")
+    browser_reporter = read_text("tests-e2e/browser_coverage_reporter.js")
+    assert 'process.env.npm_lifecycle_event === "test:e2e:coverage"' in browser_config
+    assert '"./tests-e2e/browser_coverage_reporter.js"' in browser_config
+    assert "retries: process.env.CI ? 1 : 0" in browser_config
+    assert "assert = assertBrowserCoverage" in browser_reporter
+    assert "this.assert(summaries)" in browser_reporter
+    assert 'result.status !== "passed"' in browser_reporter
 
 
 def test_local_hooks_keep_fast_and_authoritative_gates():
@@ -78,6 +84,9 @@ def test_ci_repeats_authoritative_gates_on_both_platforms():
         "python -m pytest --cov --cov-report=term-missing --cov-report=xml",
         "python -m pytest",
         "npm test",
+        "actions/upload-artifact@v4",
+        "playwright-report/",
+        "test-results/playwright/",
     ):
         assert expected in workflow
 

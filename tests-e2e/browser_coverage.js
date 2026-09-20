@@ -24,7 +24,7 @@ export const BROWSER_COVERAGE_EXCLUSIONS = [
     reason: "Session timestamps are schema-required and messages without timestamps skip createTimestamp.",
   },
   {
-    pathname: "/static/agent.js", name: "<anonymous>", line: 901, excerpt: "return;",
+    pathname: "/static/agent.js", name: "<anonymous>", line: 914, excerpt: "return;",
     reason: "Empty and busy submissions are asserted through requestSubmit/double-action browser tests; Chromium coalesces the async handler guard.",
   },
   {

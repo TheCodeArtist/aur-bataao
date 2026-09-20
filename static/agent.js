@@ -520,6 +520,14 @@ function renderSessions() {
   noSessions.textContent = "No conversations yet.";
 }
 
+function setOrganizationPending(pending) {
+  newFolderButton.disabled = pending;
+  newFolderButton.setAttribute("aria-busy", String(pending));
+  sessionList.querySelectorAll(".session-move-button, .folder-delete-button").forEach((button) => {
+    button.disabled = pending;
+  });
+}
+
 async function loadSessions() {
   const [sessionResult, folderResult] = await Promise.all([
     api("/api/agent/sessions"), api("/api/agent/folders"),
@@ -822,6 +830,7 @@ newFolderButton.addEventListener("click", async () => {
   const name = window.prompt("Folder name");
   if (name === null || !name.trim()) return;
   clearError();
+  setOrganizationPending(true);
   try {
     await api("/api/agent/folders", {
       method: "POST",
@@ -829,7 +838,11 @@ newFolderButton.addEventListener("click", async () => {
     });
     await loadSessions();
     notify("Folder created");
-  } catch (error) { showError(error); }
+  } catch (error) {
+    showError(error);
+  } finally {
+    setOrganizationPending(false);
+  }
 });
 
 async function deleteFolder(folder) {
