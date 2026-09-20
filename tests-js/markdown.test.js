@@ -50,6 +50,14 @@ test("renders block Markdown and normalizes source values", () => {
   assert(target.querySelector("hr"));
   assert.equal(target.querySelector("blockquote strong").textContent, "strong");
   assert.equal(target.querySelector("blockquote p").textContent, "Quoted strong texton two lines");
+
+  target = render("> Quote\nplain after quote");
+  assert.equal(target.querySelector("blockquote").textContent, "Quote");
+  assert.equal(target.querySelector("blockquote + p").textContent, "plain after quote");
+
+  target = render("paragraph\n## Adjacent heading");
+  assert.equal(target.querySelector("p").textContent, "paragraph");
+  assert.equal(target.querySelector("h2").textContent, "Adjacent heading");
 });
 
 test("renders inline formatting, escapes, and code spans", () => {
@@ -67,6 +75,9 @@ test("renders inline formatting, escapes, and code spans", () => {
     ["code", "two"],
   );
   assert.match(target.textContent, /`unterminated$/);
+
+  const spaces = render("`   `");
+  assert.equal(spaces.querySelector("code").textContent, "   ");
 });
 
 test("renders safe links and images without allowing unsafe protocols", () => {
@@ -81,6 +92,7 @@ test("renders safe links and images without allowing unsafe protocols", () => {
     "<https://example.test/auto>",
     "<mailto:person@example.test>",
     "![safe](/image.png 'Image')",
+    "![without title](/untitled.png)",
     "![unsafe](data:text/plain,nope)",
   ].join("\n\n"));
 
@@ -97,10 +109,12 @@ test("renders safe links and images without allowing unsafe protocols", () => {
   assert.match(target.textContent, /\[unsafe\]/);
   assert.match(target.textContent, /\[broken\]/);
 
-  const image = target.querySelector("img");
-  assert.equal(image.alt, "safe");
-  assert.equal(image.title, "Image");
-  assert.equal(image.loading, "lazy");
+  const images = target.querySelectorAll("img");
+  assert.equal(images.length, 2);
+  assert.equal(images[0].alt, "safe");
+  assert.equal(images[0].title, "Image");
+  assert.equal(images[0].loading, "lazy");
+  assert.equal(images[1].title, "");
   assert.match(target.textContent, /!\[unsafe\]/);
 });
 
@@ -150,6 +164,18 @@ test("renders tables with alignment and escaped pipes", () => {
   assert.equal(target.querySelector("td").textContent, "a|b");
   assert.equal(target.querySelector("td strong").textContent, "c");
   assert.equal(target.querySelector(".markdown-table-wrap + p").textContent, "after");
+
+  const uneven = render("A | B\n--- | ---\none | two | three");
+  assert.equal(uneven.querySelectorAll("td")[2].style.textAlign, "left");
+
+  const unevenHeader = render("A | B | C\n--- | ---\none | two");
+  assert.equal(unevenHeader.querySelectorAll("th")[2].style.textAlign, "left");
+
+  const adjacent = render("A | B\n--- | ---\none | two\nafter table");
+  assert.equal(
+    adjacent.querySelector(".markdown-table-wrap + p").textContent,
+    "after table",
+  );
 });
 
 test("does not treat invalid table dividers or mixed list types as one block", () => {

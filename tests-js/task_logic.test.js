@@ -2,14 +2,25 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+  appViewNavigation,
   compareRank,
   compareSmart,
+  dateTimeInTimezone,
+  dragInsertionRow,
+  focusViewState,
   formatFileSize,
   mergeVisibleOrder,
+  multiSelectState,
+  navigationLockState,
+  keyboardRankMove,
+  normalizeSortMode,
+  normalizeTheme,
+  nextTask,
   pendingFollowUpBecameDue,
   rankNeighbors,
   sameTaskOrder,
   smartStateOrder,
+  taskMatchesFilters,
   uploadFilename,
   validateAttachments,
 } from "../static/task_logic.js";
@@ -66,6 +77,10 @@ test("validates attachment batches in risk order", () => {
   assert.equal(
     validateAttachments([{ name: "large", size: 1025 }], attachmentLimits),
     "large is larger than 1.0 KB",
+  );
+  assert.equal(
+    validateAttachments([{ name: "", size: 1025 }], attachmentLimits),
+    "An attachment is larger than 1.0 KB",
   );
   assert.equal(
     validateAttachments(
@@ -155,4 +170,138 @@ test("detects newly due follow-ups and excludes non-actionable tasks", () => {
   ]) {
     assert.equal(pendingFollowUpBecameDue([task(values)], now), false);
   }
+});
+
+
+test("normalizes persisted display choices", () => {
+  assert.equal(normalizeTheme("light"), "light");
+  assert.equal(normalizeTheme("dark"), "dark");
+  assert.equal(normalizeTheme("system"), "");
+  assert.equal(normalizeSortMode("rank"), "rank");
+  assert.equal(normalizeSortMode("smart"), "smart");
+  assert.equal(normalizeSortMode(null), "smart");
+});
+
+
+test("summarizes multi-select state", () => {
+  const labels = { all: "All", empty: "None", singular: "choice", plural: "choices" };
+  assert.deepEqual(multiSelectState(0, 0, labels), {
+    allSelected: false, indeterminate: false, summary: "None",
+  });
+  assert.deepEqual(multiSelectState(2, 2, labels), {
+    allSelected: true, indeterminate: false, summary: "All",
+  });
+  assert.deepEqual(multiSelectState(3, 1, labels), {
+    allSelected: false, indeterminate: true, summary: "1 choice",
+  });
+  assert.equal(multiSelectState(3, 2, labels).summary, "2 choices");
+});
+
+
+test("matches tasks against every filter dimension", () => {
+  const baseTask = {
+    title: "prepare launch",
+    status: "todo",
+    labelIds: "1 2",
+    blocked: false,
+    overdue: false,
+    stalled: false,
+    followUpDue: false,
+  };
+  const baseFilters = {
+    query: "",
+    statuses: new Set(["todo"]),
+    labels: new Set(["1", "2"]),
+    labelsAreFiltered: false,
+    overdueOnly: false,
+    stalledOnly: false,
+    followUpsOnly: false,
+    blockedOnly: false,
+  };
+  const matches = (taskChange = {}, filterChange = {}) => taskMatchesFilters(
+    { ...baseTask, ...taskChange },
+    { ...baseFilters, ...filterChange },
+  );
+  assert.equal(matches(), true);
+  assert.equal(matches({}, { query: "launch" }), true);
+  assert.equal(matches({}, { query: "missing" }), false);
+  assert.equal(matches({}, { statuses: new Set(["done"]) }), false);
+  assert.equal(matches({ blocked: true }, { statuses: new Set(["blocked"]) }), true);
+  assert.equal(matches({}, { labelsAreFiltered: true, labels: new Set(["2"]) }), true);
+  assert.equal(matches({}, { labelsAreFiltered: true, labels: new Set(["3"]) }), false);
+  assert.equal(matches({ labelIds: "" }, { labelsAreFiltered: true }), false);
+  assert.equal(matches({}, { overdueOnly: true }), false);
+  assert.equal(matches({ overdue: true }, { overdueOnly: true }), true);
+  assert.equal(matches({}, { stalledOnly: true }), false);
+  assert.equal(matches({ stalled: true }, { stalledOnly: true }), true);
+  assert.equal(matches({}, { followUpsOnly: true }), false);
+  assert.equal(matches({ followUpDue: true }, { followUpsOnly: true }), true);
+  assert.equal(matches({}, { blockedOnly: true }), false);
+  assert.equal(matches({ blocked: true }), true);
+});
+
+
+test("describes navigation locks and configured local time", () => {
+  assert.deepEqual(navigationLockState(0, 0, false), {
+    locked: false,
+    copy: "Finish editing to switch views",
+  });
+  assert.equal(navigationLockState(1, 0, false).locked, true);
+  assert.equal(navigationLockState(0, 1, false).locked, true);
+  assert.deepEqual(navigationLockState(0, 0, true), {
+    locked: true,
+    copy: "Agent is updating tasks",
+  });
+  assert.deepEqual(
+    dateTimeInTimezone("Asia/Calcutta", new Date("2026-09-20T18:35:00Z")),
+    { date: "2026-09-21", minute: "00:05" },
+  );
+});
+
+
+test("chooses navigation and focused task states", () => {
+  assert.equal(appViewNavigation("focus"), "focus");
+  assert.equal(appViewNavigation("manage"), "manage");
+  assert.equal(appViewNavigation("blocked"), "manage");
+  assert.equal(appViewNavigation("agent"), "agent");
+  assert.equal(appViewNavigation("unknown"), "focus");
+
+  const first = task({ taskId: "1" });
+  const second = task({ taskId: "2" });
+  assert.deepEqual(focusViewState([], "missing"), {
+    current: null, canChooseAnother: false,
+  });
+  assert.deepEqual(focusViewState([first], "missing"), {
+    current: first, canChooseAnother: false,
+  });
+  assert.deepEqual(focusViewState([first, second], "2"), {
+    current: second, canChooseAnother: true,
+  });
+  assert.equal(nextTask([first], first), null);
+  assert.equal(nextTask([first, second], first), second);
+  assert.equal(nextTask([first, second], second), first);
+  assert.equal(nextTask([first, second], task()), first);
+});
+
+
+test("calculates pointer and keyboard rank moves without mutating snapshots", () => {
+  const dragged = task({ taskId: "1" });
+  const first = task({ taskId: "2" });
+  const second = task({ taskId: "3" });
+  const hidden = task({ taskId: "4" });
+  hidden.hidden = true;
+  first.getBoundingClientRect = () => ({ top: 100, height: 20 });
+  second.getBoundingClientRect = () => ({ top: 200, height: 20 });
+  hidden.getBoundingClientRect = () => ({ top: 0, height: 20 });
+  dragged.getBoundingClientRect = () => ({ top: 0, height: 20 });
+  const rows = [dragged, first, hidden, second];
+  assert.equal(dragInsertionRow(rows, 50, dragged), first);
+  assert.equal(dragInsertionRow(rows, 150, dragged), second);
+  assert.equal(dragInsertionRow(rows, 250, dragged), null);
+
+  assert.equal(keyboardRankMove(rows, dragged, "up"), null);
+  assert.deepEqual(keyboardRankMove(rows, dragged, "down"), [first, dragged, hidden, second]);
+  assert.deepEqual(keyboardRankMove(rows, second, "up"), [dragged, second, hidden, first]);
+  assert.equal(keyboardRankMove(rows, second, "down"), null);
+  assert.deepEqual(rows, [dragged, first, hidden, second]);
 });

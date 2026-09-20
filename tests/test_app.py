@@ -1258,6 +1258,9 @@ def test_single_shell_navigation_locks_while_task_edits_are_dirty(client):
     script = (Path(__file__).parents[1] / "static" / "app.js").read_text(
         encoding="utf-8"
     )
+    logic = (Path(__file__).parents[1] / "static" / "task_logic.js").read_text(
+        encoding="utf-8"
+    )
     controls = (Path(__file__).parents[1] / "static" / "controls.css").read_text(
         encoding="utf-8"
     )
@@ -1266,7 +1269,8 @@ def test_single_shell_navigation_locks_while_task_edits_are_dirty(client):
     assert page.count('id="theme-toggle"') == 1
     assert 'id="view-navigation-lock-message"' in page
     assert "Finish editing to switch views" in page
-    assert "dirtyTaskControls.size > 0 || pendingTaskWrites > 0" in script
+    assert "navigationLockState(" in script
+    assert "dirtyCount > 0 || pendingWrites > 0 || agentMutationPending" in logic
     assert 'link.setAttribute("aria-disabled", "true")' in script
     assert 'link.setAttribute("aria-describedby", viewNavigationLockMessage.id)' in script
     assert 'viewNavigation.addEventListener("pointerdown"' in script

@@ -112,3 +112,108 @@ export function pendingFollowUpBecameDue(tasks, localDateTime) {
       && `${values.followUpDate}T${values.followUpTime}` <= currentMinute;
   });
 }
+
+export function normalizeTheme(value) {
+  return value === "light" || value === "dark" ? value : "";
+}
+
+export function normalizeSortMode(value) {
+  return value === "rank" ? "rank" : "smart";
+}
+
+export function multiSelectState(optionCount, selectedCount, labels) {
+  const allSelected = optionCount > 0 && selectedCount === optionCount;
+  let summary = labels.all;
+  if (!allSelected) {
+    if (selectedCount === 0) summary = labels.empty;
+    else summary = `${selectedCount} ${selectedCount === 1 ? labels.singular : labels.plural}`;
+  }
+  return {
+    allSelected,
+    indeterminate: selectedCount > 0 && !allSelected,
+    summary,
+  };
+}
+
+export function taskMatchesFilters(task, {
+  query,
+  statuses,
+  labels,
+  labelsAreFiltered,
+  overdueOnly,
+  stalledOnly,
+  followUpsOnly,
+  blockedOnly,
+}) {
+  const taskLabels = task.labelIds.split(" ").filter(Boolean);
+  return !(
+    (query && !task.title.includes(query))
+    || !(statuses.has(task.status) || (statuses.has("blocked") && task.blocked))
+    || (labelsAreFiltered && !taskLabels.some((label) => labels.has(label)))
+    || (overdueOnly && !task.overdue)
+    || (stalledOnly && !task.stalled)
+    || (followUpsOnly && !task.followUpDue)
+    || (blockedOnly && !task.blocked)
+  );
+}
+
+export function navigationLockState(dirtyCount, pendingWrites, agentMutationPending) {
+  return {
+    locked: dirtyCount > 0 || pendingWrites > 0 || agentMutationPending,
+    copy: agentMutationPending ? "Agent is updating tasks" : "Finish editing to switch views",
+  };
+}
+
+export function dateTimeInTimezone(timeZone, now = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+  }).formatToParts(now);
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return {
+    date: `${values.year}-${values.month}-${values.day}`,
+    minute: `${values.hour}:${values.minute}`,
+  };
+}
+
+export function appViewNavigation(view) {
+  const taskView = view === "manage" || view === "blocked" ? "manage" : "focus";
+  return view === "agent" ? "agent" : taskView;
+}
+
+export function focusViewState(candidates, preferredTaskId = "") {
+  const current = candidates.find((task) => task.dataset.taskId === preferredTaskId)
+    || candidates[0]
+    || null;
+  return {
+    current,
+    canChooseAnother: candidates.length >= 2,
+  };
+}
+
+export function nextTask(candidates, current) {
+  if (candidates.length < 2) return null;
+  const currentIndex = candidates.indexOf(current);
+  return candidates[(currentIndex + 1) % candidates.length];
+}
+
+export function dragInsertionRow(rows, pointerY, draggedRow) {
+  return rows
+    .filter((row) => row !== draggedRow && !row.hidden)
+    .reduce((closest, row) => {
+      const box = row.getBoundingClientRect();
+      const offset = pointerY - box.top - box.height / 2;
+      return offset < 0 && offset > closest.offset ? { offset, row } : closest;
+    }, { offset: Number.NEGATIVE_INFINITY, row: null }).row;
+}
+
+export function keyboardRankMove(snapshot, row, direction) {
+  const visibleOrder = snapshot.filter((candidate) => !candidate.hidden);
+  const currentIndex = visibleOrder.indexOf(row);
+  const targetIndex = direction === "up" ? currentIndex - 1 : currentIndex + 1;
+  if (targetIndex < 0 || targetIndex >= visibleOrder.length) return null;
+  visibleOrder.splice(currentIndex, 1);
+  visibleOrder.splice(targetIndex, 0, row);
+  return mergeVisibleOrder(snapshot, visibleOrder);
+}

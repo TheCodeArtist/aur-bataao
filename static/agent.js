@@ -1,9 +1,19 @@
 import { renderMarkdown } from "./markdown.js";
 import {
   absoluteTimestamp,
+  agentBadgeState,
+  approvalState,
+  boundedOptionIndex,
+  connectionStatus as profileConnectionStatus,
   conversationTimestamp,
+  filterModels,
   formattedToolValue,
+  modelDiscoveryState,
+  normalizeDiscoveredModels,
+  profileFormValues,
+  selectProfile,
   startSessionPolling,
+  toolCallState,
 } from "./agent_logic.js";
 import { requestJson as api } from "./http.js";
 
@@ -63,14 +73,15 @@ function agentIsVisible() {
 }
 
 function renderAgentBadge() {
-  const warning = state.warningSources.size > 0;
-  const visible = warning || state.normalUpdate;
-  agentUpdateBadge.hidden = !visible;
-  if (visible) agentUpdateBadge.dataset.kind = warning ? "warning" : "normal";
+  const view = agentBadgeState({
+    warningCount: state.warningSources.size,
+    normalUpdate: state.normalUpdate,
+    currentPage: agentViewLink.getAttribute("aria-current") === "page",
+  });
+  agentUpdateBadge.hidden = !view.visible;
+  if (view.visible) agentUpdateBadge.dataset.kind = view.kind;
   else delete agentUpdateBadge.dataset.kind;
-  const baseLabel = agentViewLink.getAttribute("aria-current") === "page" ? "Agent" : "Switch to Agent";
-  const status = warning ? ", needs attention" : (state.normalUpdate ? ", has updates" : "");
-  agentViewLink.setAttribute("aria-label", `${baseLabel}${status}`);
+  agentViewLink.setAttribute("aria-label", view.label);
 }
 
 function markAgentUpdate() {
@@ -135,13 +146,7 @@ function setBusy(busy, label = "Working…") {
 }
 
 function updateConnectionStatus() {
-  const profile = state.profiles.find((item) => String(item.id) === profileSelect.value);
-  if (!profile) {
-    connectionStatus.textContent = "Configure an endpoint to begin.";
-    return;
-  }
-  const keyState = profile.api_key_env && !profile.api_key_configured ? " · key variable missing" : "";
-  connectionStatus.textContent = `${profile.name} · ${profile.model}${keyState}`;
+  connectionStatus.textContent = profileConnectionStatus(state.profiles, profileSelect.value);
 }
 
 function selectedProfileId() {
@@ -163,8 +168,9 @@ function closeModelOptions() {
 
 function setActiveModelOption(index) {
   const options = [...modelOptions.querySelectorAll(".model-option")];
-  if (!options.length) return;
-  activeModelOption = Math.max(0, Math.min(index, options.length - 1));
+  const boundedIndex = boundedOptionIndex(options.length, index);
+  if (boundedIndex === null) return;
+  activeModelOption = boundedIndex;
   options.forEach((option, optionIndex) => {
     option.classList.toggle("is-active", optionIndex === activeModelOption);
   });
@@ -176,10 +182,7 @@ function setActiveModelOption(index) {
 function renderModelOptions(filter = "") {
   const models = state.modelCache.get(selectedProfileId());
   if (!models) return closeModelOptions();
-  const query = filter.trim().toLocaleLowerCase();
-  const matches = query
-    ? models.filter((model) => model.toLocaleLowerCase().includes(query))
-    : models;
+  const matches = filterModels(models, filter);
   modelOptions.replaceChildren();
   modelOptions.removeAttribute("aria-busy");
   activeModelOption = -1;
@@ -219,29 +222,23 @@ function updateModelDiscovery(profile) {
   modelRequest += 1;
   state.discoveryDirty = false;
   closeModelOptions();
-  if (!profile) {
-    discoverModelsButton.disabled = true;
-    discoverModelsButton.textContent = "Discover";
-    setModelStatus("Save the endpoint to discover its models.");
-    return;
-  }
-  const models = state.modelCache.get(String(profile.id));
-  discoverModelsButton.disabled = false;
-  discoverModelsButton.textContent = models ? "Refresh" : "Discover";
-  setModelStatus(models
-    ? `${models.length} model${models.length === 1 ? "" : "s"} available. Type to filter or choose one.`
-    : "Discover models from this endpoint, or enter a model ID manually.");
+  const models = profile ? state.modelCache.get(String(profile.id)) : undefined;
+  const view = modelDiscoveryState(profile, models);
+  discoverModelsButton.disabled = view.disabled;
+  discoverModelsButton.textContent = view.buttonLabel;
+  setModelStatus(view.status);
 }
 
 function fillProfileForm(profile) {
-  document.querySelector("#profile-id").value = profile?.id || "";
-  document.querySelector("#profile-name").value = profile?.name || "";
-  document.querySelector("#profile-base-url").value = profile?.base_url || "http://127.0.0.1:1234/v1";
-  modelInput.value = profile?.model || "";
-  document.querySelector("#profile-api-key-env").value = profile?.api_key_env || "";
-  document.querySelector("#profile-timeout").value = profile?.timeout_seconds || 60;
-  document.querySelector("#profile-tools").checked = profile?.supports_tools ?? true;
-  document.querySelector("#profile-default").checked = profile?.is_default ?? state.profiles.length === 0;
+  const values = profileFormValues(profile, state.profiles.length === 0);
+  document.querySelector("#profile-id").value = values.id;
+  document.querySelector("#profile-name").value = values.name;
+  document.querySelector("#profile-base-url").value = values.baseUrl;
+  modelInput.value = values.model;
+  document.querySelector("#profile-api-key-env").value = values.apiKeyEnv;
+  document.querySelector("#profile-timeout").value = values.timeoutSeconds;
+  document.querySelector("#profile-tools").checked = values.supportsTools;
+  document.querySelector("#profile-default").checked = values.isDefault;
   updateModelDiscovery(profile);
 }
 
@@ -255,9 +252,7 @@ async function loadProfiles(preferredId = null) {
     state.profiles.forEach((profile) => {
       profileSelect.append(new Option(`${profile.name} · ${profile.model}`, String(profile.id)));
     });
-    const chosen = state.profiles.find((profile) => profile.id === preferredId)
-      || state.profiles.find((profile) => profile.is_default)
-      || state.profiles[0];
+    const chosen = selectProfile(state.profiles, preferredId);
     profileSelect.value = String(chosen.id);
     fillProfileForm(chosen);
   }
@@ -313,8 +308,7 @@ discoverModelsButton.addEventListener("click", async () => {
   modelInput.setAttribute("aria-expanded", "true");
   try {
     const { models } = await api(`/api/llm-profiles/${id}/models`);
-    if (!Array.isArray(models)) throw new Error("The endpoint returned an invalid model list");
-    const discovered = [...new Set(models.filter((model) => typeof model === "string" && model.trim()))];
+    const discovered = normalizeDiscoveredModels(models);
     if (request !== modelRequest || id !== selectedProfileId()) return;
     state.modelCache.set(id, discovered);
     modelOptions.removeAttribute("aria-busy");
@@ -503,15 +497,13 @@ function openMoveConversation(session) {
 }
 
 function createToolCall(call, runStatus) {
-  const name = call?.function?.name || "tool";
+  const view = toolCallState(call, runStatus);
   const details = document.createElement("details");
   details.className = "agent-message tool";
-  if (call?.id) details.dataset.toolCallId = call.id;
+  if (view.id) details.dataset.toolCallId = view.id;
 
   const summary = document.createElement("summary");
-  if (runStatus === "waiting_approval") summary.textContent = `Waiting for approval to run ${name}…`;
-  else if (runStatus === "failed" || runStatus === "cancelled") summary.textContent = `Did not finish ${name}`;
-  else summary.textContent = `Running ${name}…`;
+  summary.textContent = view.summary;
 
   const body = document.createElement("div");
   body.className = "tool-details";
@@ -519,7 +511,7 @@ function createToolCall(call, runStatus) {
   callLabel.className = "tool-detail-label";
   callLabel.textContent = "Call";
   const callValue = document.createElement("pre");
-  callValue.textContent = formattedToolValue(call?.function?.arguments ?? {});
+  callValue.textContent = formattedToolValue(view.arguments);
   const responseLabel = document.createElement("p");
   responseLabel.className = "tool-detail-label";
   responseLabel.textContent = "Response";
@@ -528,7 +520,7 @@ function createToolCall(call, runStatus) {
   responseValue.textContent = "Awaiting tool response…";
   body.append(callLabel, callValue, responseLabel, responseValue);
   details.append(summary, body);
-  return { details, name, summary, responseValue };
+  return { details, name: view.name, summary, responseValue };
 }
 
 function renderMessages(messages, runStatus = null) {
@@ -623,7 +615,8 @@ function appendUserMessage(content) {
 
 function renderApprovals(approvals, runId = null) {
   approvalList.replaceChildren();
-  const pending = approvals.filter((approval) => approval.status === "pending");
+  const view = approvalState(approvals, runId);
+  const { pending } = view;
   setAgentWarning("approval", pending.length > 0);
   pending.forEach((approval) => {
     const card = document.createElement("article");
@@ -648,10 +641,7 @@ function renderApprovals(approvals, runId = null) {
     card.append(heading, argumentsBlock, actions);
     approvalList.append(card);
   });
-  const hasUnconsumedDecision = approvals.some((approval) => (
-    approval.status === "approved" || approval.status === "rejected"
-  ));
-  if (!pending.length && hasUnconsumedDecision && runId) {
+  if (view.canResume) {
     const card = document.createElement("article");
     card.className = "approval-card";
     const heading = document.createElement("h2");

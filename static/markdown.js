@@ -1,7 +1,7 @@
 const SAFE_LINK_PROTOCOLS = new Set(["http:", "https:", "mailto:"]);
 
 function appendText(parent, text) {
-  if (text) parent.append(document.createTextNode(text));
+  parent.append(document.createTextNode(text));
 }
 
 function safeLinkTarget(value) {
@@ -143,11 +143,11 @@ function splitTableRow(line) {
 
 function isTableDivider(line) {
   const cells = splitTableRow(line);
-  return cells.length > 0 && cells.every((cell) => /^:?-{3,}:?$/.test(cell));
+  return cells.every((cell) => /^:?-{3,}:?$/.test(cell));
 }
 
 function startsBlock(lines, index) {
-  const line = lines[index] || "";
+  const line = lines[index];
   return /^ {0,3}(#{1,6})\s+/.test(line)
     || /^ {0,3}(`{3,}|~{3,})/.test(line)
     || /^ {0,3}>/.test(line)

@@ -273,10 +273,12 @@ def test_agent_messages_use_safe_markdown_rendering_for_both_roles():
 def test_agent_tool_calls_render_as_live_collapsible_pairs():
     static_dir = Path(__file__).parents[1] / "static"
     script = (static_dir / "agent.js").read_text()
+    logic = (static_dir / "agent_logic.js").read_text()
     styles = (static_dir / "agent.css").read_text()
 
     assert "function createToolCall(call, runStatus)" in script
-    assert "`Running ${name}" in script
+    assert "toolCallState(call, runStatus)" in script
+    assert "`Running ${name}" in logic
     assert "`Ran ${view.name}`" in script
     assert 'responseValue.textContent = "Awaiting tool response' in script
     assert "apiWithSessionPolling" in script
@@ -286,6 +288,7 @@ def test_agent_tool_calls_render_as_live_collapsible_pairs():
 def test_agent_lifecycle_badges_and_task_invalidation_are_shell_integrated():
     static_dir = Path(__file__).parents[1] / "static"
     agent_script = (static_dir / "agent.js").read_text()
+    agent_logic = (static_dir / "agent_logic.js").read_text()
     app_script = (static_dir / "app.js").read_text()
     controls = (static_dir / "controls.css").read_text()
 
@@ -296,7 +299,8 @@ def test_agent_lifecycle_badges_and_task_invalidation_are_shell_integrated():
     assert "themeToggle" not in agent_script
     assert "normalUpdate: false" in agent_script
     assert "warningSources: new Set()" in agent_script
-    assert 'agentUpdateBadge.dataset.kind = warning ? "warning" : "normal"' in agent_script
+    assert "agentBadgeState({" in agent_script
+    assert 'warning ? "warning" : "normal"' in agent_logic
     assert "function clearAgentBadges()" in agent_script
     assert 'new CustomEvent("agent:task-mutation-start")' in agent_script
     assert 'new CustomEvent("agent:tasks-mutated")' in agent_script

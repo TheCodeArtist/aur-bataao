@@ -2,11 +2,22 @@ import { requestJson as api } from "./http.js";
 import {
   compareRank,
   compareSmart,
+  appViewNavigation,
   formatFileSize,
+  dateTimeInTimezone,
+  dragInsertionRow,
+  focusViewState,
+  keyboardRankMove,
   mergeVisibleOrder,
+  multiSelectState,
+  navigationLockState,
+  normalizeSortMode,
+  normalizeTheme,
+  nextTask,
   pendingFollowUpBecameDue as hasPendingFollowUpBecomeDue,
   rankNeighbors,
   sameTaskOrder,
+  taskMatchesFilters,
   uploadFilename,
   validateAttachments,
 } from "./task_logic.js";
@@ -35,8 +46,7 @@ const taskControlBaselines = new WeakMap();
 
 function savedTheme() {
   try {
-    const theme = localStorage.getItem(themeStorageKey);
-    return theme === "light" || theme === "dark" ? theme : "";
+    return normalizeTheme(localStorage.getItem(themeStorageKey));
   } catch (_) {
     return "";
   }
@@ -204,14 +214,20 @@ function updateTaskControlDirtyState(control) {
 }
 
 function viewNavigationLocked() {
-  return dirtyTaskControls.size > 0 || pendingTaskWrites > 0 || agentMutationPending;
+  return navigationLockState(
+    dirtyTaskControls.size,
+    pendingTaskWrites,
+    agentMutationPending,
+  ).locked;
 }
 
 function updateViewNavigationLock(announce = false) {
-  const locked = viewNavigationLocked();
-  viewNavigationLockCopy.textContent = agentMutationPending
-    ? "Agent is updating tasks"
-    : "Finish editing to switch views";
+  const { locked, copy } = navigationLockState(
+    dirtyTaskControls.size,
+    pendingTaskWrites,
+    agentMutationPending,
+  );
+  viewNavigationLockCopy.textContent = copy;
   viewNavigation.classList.toggle("is-edit-locked", locked);
   viewNavigationLockMessage.hidden = !locked;
   appViewLinks.forEach((link) => {
@@ -388,6 +404,8 @@ function expandTaskDetails(row) {
   row.querySelectorAll(".toggle-details, .focus-toggle-details").forEach((control) => {
     control.setAttribute("aria-expanded", "true");
   });
+  const manageToggle = row.querySelector(".toggle-details");
+  manageToggle.setAttribute("aria-label", "Hide task details");
   const focusToggle = row.querySelector(".focus-toggle-details");
   focusToggle.setAttribute("aria-label", "Collapse task details and editing controls");
   focusToggle.title = focusToggle.getAttribute("aria-label");
@@ -465,6 +483,8 @@ document.addEventListener("click", async (event) => {
       row.querySelectorAll(".toggle-details, .focus-toggle-details").forEach((control) => {
         control.setAttribute("aria-expanded", "false");
       });
+      const manageToggle = row.querySelector(".toggle-details");
+      manageToggle.setAttribute("aria-label", "Show task details");
       const focusToggle = row.querySelector(".focus-toggle-details");
       focusToggle.setAttribute("aria-label", "Expand task details and editing controls");
       focusToggle.title = focusToggle.getAttribute("aria-label");
@@ -472,12 +492,13 @@ document.addEventListener("click", async (event) => {
     return;
   }
 
-  const labelFilter = event.target.closest(".task-label-filter");
-  if (labelFilter) {
+  const labelChip = event.target.closest(".task-label-filter");
+  if (labelChip) {
     const labelMenu = document.querySelector("#label-filter");
     labelMenu.querySelectorAll("[data-filter-value]").forEach((checkbox) => {
-      checkbox.checked = checkbox.value === labelFilter.dataset.labelId;
+      checkbox.checked = checkbox.value === labelChip.dataset.labelId;
     });
+    labelChipFilter = true;
     updateMultiSelect(labelMenu);
     applyFilters();
     return;
@@ -721,6 +742,7 @@ const stalledFilter = document.querySelector("#stalled-filter");
 const followUpFilter = document.querySelector("#follow-up-filter");
 const blockedViewIndicator = document.querySelector("#blocked-view-indicator");
 let blockedView = false;
+let labelChipFilter = false;
 
 function multiSelectOptions(filter) {
   return [...filter.querySelectorAll("[data-filter-value], [data-task-label-option]")];
@@ -737,22 +759,18 @@ function selectedFilterValues(filter) {
 function updateMultiSelect(filter) {
   const options = multiSelectOptions(filter);
   const selectedCount = options.filter((checkbox) => checkbox.checked).length;
-  const allSelected = options.length > 0 && selectedCount === options.length;
+  const view = multiSelectState(options.length, selectedCount, {
+    all: filter.dataset.allLabel,
+    empty: filter.dataset.emptyLabel,
+    singular: filter.dataset.singular,
+    plural: filter.dataset.plural,
+  });
   const selectAll = filter.querySelector("[data-select-all]");
   if (selectAll) {
-    selectAll.checked = allSelected;
-    selectAll.indeterminate = selectedCount > 0 && !allSelected;
+    selectAll.checked = view.allSelected;
+    selectAll.indeterminate = view.indeterminate;
   }
-
-  let summary = filter.dataset.allLabel;
-  if (!allSelected) {
-    if (selectedCount === 0) {
-      summary = filter.dataset.emptyLabel;
-    } else {
-      summary = `${selectedCount} ${selectedCount === 1 ? filter.dataset.singular : filter.dataset.plural}`;
-    }
-  }
-  filter.querySelector(".multi-select-summary").textContent = summary;
+  filter.querySelector(".multi-select-summary").textContent = view.summary;
 }
 
 document.querySelectorAll(".multi-select").forEach((select) => {
@@ -772,6 +790,7 @@ document.querySelectorAll(".filter-multi-select").forEach((filter) => {
         checkbox.checked = event.target.checked;
       });
     }
+    if (filter === labelFilter) labelChipFilter = false;
     blockedView = false;
     blockedViewIndicator.hidden = true;
     updateMultiSelect(filter);
@@ -797,6 +816,7 @@ function syncLabelFilterOptions() {
     .sort((first, second) => first[1].localeCompare(second[1]));
   const selectedLabelStillExists = sortedLabels.some(([id]) => selectedLabels.has(id));
   const resetMissingSelection = selectedLabels.size > 0 && !selectedLabelStillExists;
+  if (resetMissingSelection) labelChipFilter = false;
   const options = sortedLabels
     .map(([id, name]) => {
       const option = document.createElement("label");
@@ -820,22 +840,24 @@ function applyFilters() {
   const statuses = selectedFilterValues(statusFilter);
   const labels = selectedFilterValues(labelFilter);
   const labelOptions = multiSelectOptions(labelFilter);
-  const labelsAreFiltered = labels.size !== labelOptions.length;
+  const labelsAreFiltered = labelChipFilter || labels.size !== labelOptions.length;
   const overdueOnly = overdueFilter.checked;
   const stalledOnly = stalledFilter.checked;
   const followUpsOnly = followUpFilter.checked;
   let visibleTasks = 0;
   document.querySelectorAll(".task-row").forEach((row) => {
-    const rowLabels = row.dataset.labelIds.split(" ").filter(Boolean);
-    row.hidden = Boolean(
-      (query && !row.dataset.title.includes(query)) ||
-      !(statuses.has(row.dataset.status) || (statuses.has("blocked") && row.dataset.blocked === "true")) ||
-      (labelsAreFiltered && !rowLabels.some((label) => labels.has(label))) ||
-      (overdueOnly && row.dataset.overdue !== "true") ||
-      (stalledOnly && row.dataset.stalled !== "true") ||
-      (followUpsOnly && row.dataset.followUpDue !== "true") ||
-      (blockedView && row.dataset.blocked !== "true")
-    );
+    row.hidden = !taskMatchesFilters({
+      title: row.dataset.title,
+      status: row.dataset.status,
+      labelIds: row.dataset.labelIds,
+      blocked: row.dataset.blocked === "true",
+      overdue: row.dataset.overdue === "true",
+      stalled: row.dataset.stalled === "true",
+      followUpDue: row.dataset.followUpDue === "true",
+    }, {
+      query, statuses, labels, labelsAreFiltered, overdueOnly, stalledOnly,
+      followUpsOnly, blockedOnly: blockedView,
+    });
     if (!row.hidden) visibleTasks += 1;
     row.querySelectorAll(".task-label-filter").forEach((chip) => {
       chip.setAttribute("aria-pressed", String(labelsAreFiltered && labels.has(chip.dataset.labelId)));
@@ -875,8 +897,7 @@ const focusNextAction = document.querySelector("#focus-next-action");
 const aurBataaoButton = document.querySelector("#aur-bataao-button");
 
 function updateAppViewNavigation(view) {
-  const activeView = view === "manage" || view === "blocked" ? "manage" : "focus";
-  const currentView = view === "agent" ? "agent" : activeView;
+  const currentView = appViewNavigation(view);
   const names = { focus: "Focused", manage: "All Tasks", agent: "Agent" };
   appViewLinks.forEach((link) => {
     if (link.dataset.appView === currentView) {
@@ -908,7 +929,8 @@ function actionableTaskRows() {
 
 function renderFocusView(preferredTaskId = focusTaskId) {
   const candidates = actionableTaskRows();
-  const current = candidates.find((row) => row.dataset.taskId === preferredTaskId) || candidates[0] || null;
+  const view = focusViewState(candidates, preferredTaskId);
+  const { current } = view;
   taskRows().forEach((row) => row.classList.toggle("is-focus-task", row === current));
   focusTaskId = current?.dataset.taskId || "";
 
@@ -916,15 +938,16 @@ function renderFocusView(preferredTaskId = focusTaskId) {
   document.body.classList.toggle("focus-empty", !current);
   focusEmptyState.hidden = Boolean(current);
   focusNextAction.hidden = !current;
-  aurBataaoButton.disabled = candidates.length < 2;
-  aurBataaoButton.title = candidates.length < 2 ? "No other actionable task right now" : "Suggest another task";
+  aurBataaoButton.disabled = !view.canChooseAnother;
+  aurBataaoButton.title = view.canChooseAnother
+    ? "Suggest another task"
+    : "No other actionable task right now";
 }
 
 function showAnotherTask(currentRow) {
   const candidates = actionableTaskRows();
-  if (candidates.length < 2) return;
-  const currentIndex = candidates.indexOf(currentRow);
-  const next = candidates[(currentIndex + 1) % candidates.length];
+  const next = nextTask(candidates, currentRow);
+  if (!next) return;
   renderFocusView(next.dataset.taskId);
 }
 
@@ -1013,6 +1036,7 @@ document.querySelector("#view-blocked-tasks").addEventListener("click", () => {
   labelFilter.querySelectorAll("[data-filter-value]").forEach((checkbox) => {
     checkbox.checked = true;
   });
+  labelChipFilter = false;
   updateMultiSelect(statusFilter);
   updateMultiSelect(labelFilter);
   showManageView({ blockedOnly: true });
@@ -1064,15 +1088,14 @@ function saveSortPreference(value) {
 
 function savedSortPreference() {
   try {
-    const value = localStorage.getItem(taskSortStorageKey);
-    return value === "rank" ? "rank" : "smart";
+    return normalizeSortMode(localStorage.getItem(taskSortStorageKey));
   } catch (_) {
     return "smart";
   }
 }
 
 function setSortMode(value, persist = true) {
-  sortControl.value = value === "rank" ? "rank" : "smart";
+  sortControl.value = normalizeSortMode(value);
   taskList.dataset.sort = sortControl.value;
   if (persist) saveSortPreference(sortControl.value);
   sortTasks();
@@ -1113,13 +1136,7 @@ async function persistRankMove(row, previousOrder) {
 }
 
 function dragAfterRow(pointerY, draggedRow) {
-  return taskRows()
-    .filter((row) => row !== draggedRow && !row.hidden)
-    .reduce((closest, row) => {
-      const box = row.getBoundingClientRect();
-      const offset = pointerY - box.top - box.height / 2;
-      return offset < 0 && offset > closest.offset ? { offset, row } : closest;
-    }, { offset: Number.NEGATIVE_INFINITY, row: null }).row;
+  return dragInsertionRow(taskRows(), pointerY, draggedRow);
 }
 
 taskList.addEventListener("dragstart", (event) => {
@@ -1180,13 +1197,13 @@ taskList.addEventListener("keydown", async (event) => {
   event.preventDefault();
   const row = taskRow(handle);
   const snapshot = taskRows();
-  const visibleOrder = snapshot.filter((candidate) => !candidate.hidden);
-  const currentIndex = visibleOrder.indexOf(row);
-  const targetIndex = event.key === "ArrowUp" ? currentIndex - 1 : currentIndex + 1;
-  if (targetIndex < 0 || targetIndex >= visibleOrder.length) return;
-  visibleOrder.splice(currentIndex, 1);
-  visibleOrder.splice(targetIndex, 0, row);
-  renderTaskOrder(mergeVisibleOrder(snapshot, visibleOrder));
+  const movedOrder = keyboardRankMove(
+    snapshot,
+    row,
+    event.key === "ArrowUp" ? "up" : "down",
+  );
+  if (!movedOrder) return;
+  renderTaskOrder(movedOrder);
   await persistRankMove(row, snapshot);
 });
 
@@ -1203,16 +1220,7 @@ if (document.body.dataset.error) {
 
 // Reconcile at midnight and surface timed follow-ups within a minute.
 function dateTimeInConfiguredTimezone() {
-  const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone: document.body.dataset.timezone,
-    year: "numeric", month: "2-digit", day: "2-digit",
-    hour: "2-digit", minute: "2-digit", hourCycle: "h23",
-  }).formatToParts(new Date());
-  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
-  return {
-    date: `${values.year}-${values.month}-${values.day}`,
-    minute: `${values.hour}:${values.minute}`,
-  };
+  return dateTimeInTimezone(document.body.dataset.timezone);
 }
 
 function pendingFollowUpBecameDue(localDateTime) {
