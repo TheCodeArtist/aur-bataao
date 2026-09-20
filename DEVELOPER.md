@@ -505,8 +505,9 @@ entry point.
   developer's normal database.
 - The E2E server resets state between journeys and uses a deterministic fake
   model provider, so tests never require a live LLM or API key.
-- Playwright uses one worker to make shared server state and coverage collection
-  deterministic.
+- Playwright uses one worker because the E2E server is shared. Coverage must not
+  depend on one worker surviving the run: Playwright replaces a worker after a
+  failed attempt or retry.
 - Operating-system calls, process boundaries, clocks, and provider clients are
   mocked or injected when the real dependency would make a unit test unsafe or
   nondeterministic.
@@ -571,8 +572,22 @@ functions, or uncovered accountable V8 ranges. Exact V8 ranges may be excluded
 only for documented schema/DOM invariants or navigation teardown behavior; a
 stale exclusion fails the gate. Broad file exclusions are not supported.
 
+Each test attaches its controller V8 entries to its Playwright result. The
+run-level coverage reporter merges those entries across worker replacements and
+retries. It prints a diagnostic map for every run, but enforces the numerical
+gate only when the underlying test run passed. Do not move this assertion back
+into a worker fixture or `afterAll`: Playwright tears down and replaces workers
+after failures, so worker-local coverage is necessarily partial and would mask
+the original error with false uncovered ranges and stale exclusions.
+
+CI retries a failed browser test once, after it has already run in a clean
+worker. A retry is diagnostic containment for runner noise, not permission to
+leave a known race. Reproduce and fix every flaky first attempt; local runs stay
+retry-free so failures remain visible while developing.
+
 Playwright retains traces and screenshots on failure under
-`test-results/playwright/`. To inspect a trace:
+`test-results/playwright/`. GitHub Actions uploads that directory together with
+`playwright-report/` whenever the JavaScript job fails. To inspect a trace:
 
 ```powershell
 npx playwright show-trace path\to\trace.zip
@@ -635,7 +650,109 @@ to evolve with the source instead of silently accumulating obsolete entries.
 Use `BROWSER_COVERAGE_VERBOSE=1` to print excluded and uncovered range details
 while maintaining the allowlist.
 
-### Designing and maintaining tests
+### Test design and testing hygiene
+
+#### Synchronize on completion contracts
+
+A browser action completing means that Chromium dispatched the action; it does
+not mean an asynchronous event handler, API request, state refresh, or render
+has completed. Every asynchronous transition needs a completion barrier that
+proves the state required by the next step.
+
+- Register `waitForResponse`, `waitForEvent`, or a route gate before triggering
+  the action so a fast response cannot be missed.
+- Check the exact method and resource, assert that the response succeeded, and
+  then assert an observable DOM postcondition when response handling performs a
+  second asynchronous render.
+- Wait on a value that changes because of the action. An attribute or text that
+  was already correct before the action is not a completion barrier.
+- Do not use arbitrary sleeps or `networkidle` as readiness signals. Background
+  requests make network idleness unrelated to the contract, while a sleep only
+  changes the probability of a race.
+- Drain pending writes before directly manipulating DOM state for a narrow
+  controller test. A late response may otherwise run `applyTask` or an
+  equivalent renderer and overwrite the synthetic state.
+
+Prefer real routes and user interactions over synthetic DOM mutation. When a
+defensive controller branch cannot be reached through a valid workflow, keep
+the mutation local, explain the invariant, and trigger recomputation through a
+specific observable action.
+
+#### Make concurrency deterministic
+
+Use a deferred promise in a Playwright route when a test must observe an
+in-flight operation. Assert both the intermediate contract and the final
+postcondition:
+
+- only one request is issued for repeated submission;
+- controls that could conflict are disabled and the container exposes its busy
+  state;
+- Escape, cancel, or repeated submit cannot discard an owned operation;
+- success commits and rerenders the authoritative state; and
+- failure restores ownership, controls, user input, and a usable retry path.
+
+Production handlers should claim or clear operation ownership synchronously
+before their first `await`, restore retryable state in `catch`, and restore
+controls in `finally`. Tests that hold a request must release the gate and
+remove the route in `finally`; otherwise an assertion failure can leave a
+pending handler that obscures the original error during teardown.
+
+Folder and conversation organization are representative examples. Do not open
+a dependent picker until folder creation and the following session refresh are
+observable. Disable organization controls while that refresh is pending so a
+fast user cannot open a picker backed by stale state.
+
+#### Keep journeys focused and identities stable
+
+One Playwright test should describe one behavioral contract. Split a journey
+when its setup, failures, and assertions cover independent features; large
+coverage-driven journeys amplify timeouts, hide the first broken contract, and
+make retries expensive. Share only deterministic setup helpers, such as
+creating a conversation or waiting for a folder to render. Keep the behavior's
+assertions in the test that owns them.
+
+Playwright locators are live queries. A locator such as `.is-focus-task` can
+silently resolve to a different element after rerendering. When identity
+matters, read the stable task or session ID and construct a locator for that
+specific entity before continuing.
+
+Prefer roles, accessible names, labels, and public controls. Assert relevant
+accessibility state (`aria-busy`, `aria-checked`, `aria-expanded`, disabled
+controls) as well as visual state. For persisted preferences, assert the value
+after reload. For optional browser facilities such as storage, force the API to
+throw and verify that the feature remains usable rather than merely suppressing
+the exception.
+
+#### Preserve isolation and platform ownership
+
+Patch the narrow dependency reference owned by the module under test. Do not
+mutate process-wide modules such as `os.name`: imported modules and `pathlib`
+share that object, so a platform simulation can corrupt unrelated pytest and
+temporary-directory behavior. Use an injected boundary or a proxy assigned to
+the target module, and let the test fixture restore it.
+
+Mock operating-system APIs to cover deterministic local branches, but keep the
+native CI platform authoritative for actual process, signal, lock, and path
+semantics. The Ubuntu browser job is also a Python integration job because
+Playwright launches `tests/e2e_server.py`; it must install the project and test
+dependencies before running npm commands.
+
+#### Keep coverage diagnostic, accountable, and secondary
+
+Coverage may fail an otherwise successful run; it must never replace the first
+behavioral failure. Per-test coverage attachments and the run-level reporter
+are the cross-worker boundary. If the test run failed, retain the behavioral
+error and use partial coverage only as a diagnostic. If the test run passed,
+missing or malformed controller data, uncalled functions, accountable gaps,
+and stale exclusions must fail the run.
+
+Coverage exclusions are source-sensitive review records, not permanent line
+number suppressions. Controller edits can move an exact V8 range. Update an
+exclusion only after confirming that its documented invariant and user-visible
+alternative still hold; remove it when the range becomes covered. Never infer
+that an exclusion is stale from a partial worker run.
+
+#### Change and verification cadence
 
 When behavior changes:
 
@@ -649,6 +766,13 @@ When behavior changes:
 5. Run the affected numerical gate and inspect the report; do not rely only on
    its exit code.
 6. Run the complete local gate before pushing.
+
+For a timing-sensitive regression, repeat the smallest affected Playwright
+selection with `--repeat-each` after the focused test passes. This is additional
+evidence, not a replacement for the complete gate. On CI failure, start with
+the first behavioral assertion, then inspect the uploaded error context,
+screenshot, and trace; downstream coverage diagnostics may describe only the
+work completed before that failure.
 
 Work in small, reviewable batches and inspect coverage after each batch. Avoid
 broad refactors motivated only by the metric, preserve unrelated user changes,
@@ -779,6 +903,9 @@ git add --chmod=+x .githooks/pre-commit .githooks/commit-msg .githooks/pre-push
 
 GitHub Actions repeats the checks on every push and pull request. Python runs on
 Windows with Python 3.12 and full coverage, plus Ubuntu with Python 3.11 for
-cross-platform behavior. JavaScript and Chromium run on Ubuntu with Node 24.
+cross-platform behavior. JavaScript and Chromium run on Ubuntu with Node 24 and
+Python 3.11 because the browser suite starts the Python E2E server. That job
+installs both dependency sets, retries a failed browser test once, and uploads
+the Playwright HTML report, error context, screenshots, and traces on failure.
 Local hooks can be bypassed with `--no-verify`, but CI remains the authoritative
 merge gate.
