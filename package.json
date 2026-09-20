@@ -6,9 +6,10 @@
     "node": ">=20.19.0"
   },
   "scripts": {
-    "test": "npm run test:unit && npm run test:e2e",
-    "test:unit": "node --test --experimental-test-coverage --test-coverage-include=static/markdown.js --test-coverage-include=static/http.js --test-coverage-include=static/task_logic.js --test-coverage-include=static/agent_logic.js --test-coverage-lines=95 --test-coverage-branches=95 --test-coverage-functions=95 tests-js/*.test.js",
-    "test:e2e": "playwright test"
+    "test": "npm run test:unit && npm run test:e2e:coverage",
+    "test:unit": "node --test --experimental-test-coverage --test-coverage-include=static/markdown.js --test-coverage-include=static/http.js --test-coverage-include=static/task_logic.js --test-coverage-include=static/agent_logic.js --test-coverage-include=tests-e2e/browser_coverage.js --test-coverage-lines=100 --test-coverage-branches=100 --test-coverage-functions=100 tests-js/*.test.js",
+    "test:e2e": "playwright test",
+    "test:e2e:coverage": "playwright test"
   },
   "devDependencies": {
     "@playwright/test": "^1.63.0",

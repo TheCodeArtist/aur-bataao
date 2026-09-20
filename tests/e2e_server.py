@@ -6,6 +6,7 @@ from pathlib import Path
 from flask import jsonify
 from waitress import serve
 
+from agent_store import AgentStore
 from app import create_app, get_db
 from llm_profiles import LlmProfileStore
 from llm_provider import CompletionResult, CompletionToolCall
@@ -102,6 +103,86 @@ def reset_state() -> None:
 def reset_for_browser_test():
     reset_state()
     return jsonify(ok=True)
+
+
+@app.post("/__e2e__/profiles/clear")
+def clear_profiles_for_browser_test():
+    db = get_db()
+    db.execute("DELETE FROM llm_profiles")
+    db.commit()
+    return jsonify(ok=True)
+
+
+@app.post("/__e2e__/agent/interrupted")
+def seed_interrupted_agent_run():
+    db = get_db()
+    profile = LlmProfileStore(db, environ={}).get()
+    store = AgentStore(db)
+    session = store.create_session(profile.id, title="Interrupted approval")
+    run = store.create_run(session.id)
+    store.append_message(
+        session.id,
+        {"role": "user", "content": "Create the recovered browser task"},
+        run_id=run.id,
+    )
+    store.append_message(
+        session.id,
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "resume-create",
+                    "type": "function",
+                    "function": {
+                        "name": "create_task",
+                        "arguments": '{"title":"Recovered browser task"}',
+                    },
+                }
+            ],
+        },
+        run_id=run.id,
+    )
+    approval = store.request_approval(
+        run.id,
+        tool_call_id="resume-create",
+        tool_name="create_task",
+        arguments={"title": "Recovered browser task"},
+    )
+    store.decide_approval(approval.id, True)
+    db.commit()
+    return jsonify(session_id=session.id, run_id=run.id)
+
+
+@app.post("/__e2e__/agent/messages")
+def seed_agent_messages():
+    db = get_db()
+    profile = LlmProfileStore(db, environ={}).get()
+    store = AgentStore(db)
+    session = store.create_session(profile.id, title="Message rendering")
+    run = store.create_run(session.id)
+    messages = [
+        {"role": "user", "content": "Show message variants"},
+        {
+            "role": "assistant",
+            "content": "Rendered **assistant** message",
+            "tool_calls": [
+                {
+                    "id": "paired-call",
+                    "type": "function",
+                    "function": {"name": "list_tasks", "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "paired-call", "content": '{"tasks":[]}'},
+        {"role": "tool", "tool_call_id": "orphan-call", "content": "orphan result"},
+        {"role": "assistant", "content": "   "},
+    ]
+    for message in messages:
+        store.append_message(session.id, message, run_id=run.id)
+    store.transition_run(run.id, "completed")
+    db.commit()
+    return jsonify(session_id=session.id)
 
 
 with app.app_context():

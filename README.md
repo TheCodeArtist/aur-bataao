@@ -137,13 +137,29 @@ npm test
 ```
 
 Python coverage includes statement and branch coverage across the application
-and fails below 95%. JavaScript unit coverage uses Node's built-in test runner
-and fails below 95% for lines, branches, or functions across the Markdown,
-networking, task, and agent logic modules. DOM controller behavior is verified
-separately in Chromium against an isolated Flask server, temporary SQLite
-database, temporary attachments, and deterministic fake model provider. Run
-only the fast numerical gate with `npm run test:unit`, or the browser suite with
-`npm run test:e2e`; `npm test` runs both.
+and fails below 100%. JavaScript unit coverage uses Node's built-in test runner
+and requires 100% lines, branches, and functions across Markdown, networking,
+task decisions, agent decisions, and the browser-coverage reporter.
+
+DOM entry controllers are verified in Chromium against an isolated Flask
+server, temporary SQLite database, temporary attachments, and a deterministic
+fake model provider. The browser suite fails on workflow regressions, uncaught
+page errors, an uncalled controller function, or an uncovered accountable V8
+range. It reports both the raw V8 result and the 100% accountable result.
+
+V8 ranges are browser-version-dependent, so a small number of exact ranges can
+be excluded only with a reviewable reason. These are schema/DOM invariants or
+navigation branches whose observable result is already asserted but whose
+document teardown prevents Chromium from returning the final counter. Broad
+file exclusions are not supported, and an exclusion that becomes stale fails
+the gate. Substantive decisions remain in the 100%-gated logic modules;
+Playwright covers real DOM events, navigation, persistence, rollback, races,
+downloads, accessibility state, and browser-error behavior.
+
+Run the fast unit gate with `npm run test:unit`, a diagnostic browser run with
+`npm run test:e2e`, or the authoritative browser gate with
+`npm run test:e2e:coverage`. `npm test` runs both authoritative JavaScript
+gates.
 
 The app initializes its schema automatically. Task-list loads reconcile active
 date labels at most once per minute, and an open browser checks for local
@@ -178,7 +194,7 @@ The hooks provide these checks:
   before an optional description.
 - **`pre-push`:** Runs branch-aware Python coverage and the JavaScript test and
   browser suites. The push stops if any behavior test fails or either numerical
-  coverage gate falls below 95%.
+  coverage gate falls below 100%.
 
 Supported Conventional Commit types are `build`, `chore`, `ci`, `docs`, `feat`,
 `fix`, `perf`, `refactor`, `revert`, `style`, and `test`. Lowercase scopes and
