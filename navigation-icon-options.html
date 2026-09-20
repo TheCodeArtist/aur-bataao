@@ -1,0 +1,116 @@
+<div id="aur-nav-options" aria-label="Unified Aur Bataao header icon options">
+  <style>
+    #aur-nav-options {
+      --aur-bg: light-dark(#f3f3f3, #111111);
+      --aur-panel: light-dark(#ffffff, #1e1e1e);
+      --aur-panel-subtle: light-dark(#f8f8f8, #252525);
+      --aur-hover: light-dark(#eeeeee, #383838);
+      --aur-line: light-dark(#e2e2e2, #383838);
+      --aur-text: light-dark(#1e1e1e, #f5f5f5);
+      --aur-muted: light-dark(#5f5f5f, #bdbdbd);
+      color-scheme: light dark;
+      color: var(--aur-text);
+      font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+    }
+    #aur-nav-options .mock-window { overflow: hidden; border: 1px solid var(--aur-line); border-radius: 12px; background: var(--aur-bg); }
+    #aur-nav-options .mock-header { display: flex; min-height: 64px; padding: 10px 14px; align-items: center; gap: 14px; background: var(--aur-bg); }
+    #aur-nav-options .brand { margin-right: auto; font-weight: 700; white-space: nowrap; }
+    #aur-nav-options .nav { display: flex; padding: 2px; align-items: center; gap: 2px; border: 1px solid var(--aur-line); border-radius: 7px; background: var(--aur-panel-subtle); }
+    #aur-nav-options .nav-item { display: inline-flex; min-height: 34px; padding: 5px 9px; align-items: center; gap: 6px; border: 0; border-radius: 5px; color: var(--aur-muted); background: transparent; font: inherit; }
+    #aur-nav-options .nav-item.current { color: var(--aur-text); background: var(--aur-panel); box-shadow: 0 0 0 1px var(--aur-line); font-weight: 650; }
+    #aur-nav-options .nav-item.icon-only { width: 34px; padding: 0; justify-content: center; }
+    #aur-nav-options .icon-slot, #aur-nav-options .icon-choice i, #aur-nav-options .theme i { display: inline-flex; width: 17px; height: 17px; }
+    #aur-nav-options svg { width: 17px; height: 17px; stroke-width: 1.8; }
+    #aur-nav-options .theme { display: inline-flex; min-height: 32px; margin-left: 5px; padding-left: 14px; align-items: center; gap: 7px; border-left: 1px solid var(--aur-line); color: var(--aur-muted); }
+    #aur-nav-options .workspace { min-height: 105px; padding: 18px; border-top: 1px solid var(--aur-line); background: var(--aur-panel); }
+    #aur-nav-options .workspace-title { margin: 0 0 6px; font-weight: 650; }
+    #aur-nav-options .workspace-copy { margin: 0; color: var(--aur-muted); }
+    #aur-nav-options .choices { display: grid; margin-top: 16px; gap: 14px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    #aur-nav-options .choice-group h3 { margin: 0 0 7px; font-size: 14px; font-weight: 650; }
+    #aur-nav-options .choice-row { display: flex; flex-wrap: wrap; gap: 7px; }
+    #aur-nav-options .icon-choice { display: inline-flex; min-height: 40px; padding: 7px 10px; align-items: center; gap: 7px; border: 1px solid var(--aur-line); border-radius: 6px; color: var(--aur-muted); background: var(--aur-panel); font: inherit; }
+    #aur-nav-options .icon-choice[aria-pressed="true"] { color: var(--aur-text); box-shadow: 0 0 0 2px light-dark(#477500, #9bdc35); }
+    #aur-nav-options .recommended { color: light-dark(#3d6500, #9bdc35); }
+    @media (max-width: 640px) {
+      #aur-nav-options .mock-header { align-items: flex-start; flex-wrap: wrap; }
+      #aur-nav-options .brand { width: 100%; }
+      #aur-nav-options .nav-item .nav-label { display: none; }
+      #aur-nav-options .nav-item { width: 34px; padding: 0; justify-content: center; }
+      #aur-nav-options .theme { margin-left: auto; }
+      #aur-nav-options .choices { grid-template-columns: 1fr; }
+    }
+  </style>
+
+  <div class="mock-window">
+    <header class="mock-header">
+      <div class="brand">Aur Bataao</div>
+      <nav class="nav" aria-label="Application views">
+        <button class="nav-item current nav-focus" type="button" aria-label="Focused view">
+          <span class="icon-slot"></span><span class="nav-label">Focused</span>
+        </button>
+        <button class="nav-item nav-tasks" type="button" aria-label="View all tasks">
+          <span class="icon-slot"></span><span class="nav-label">View all tasks</span>
+        </button>
+        <button class="nav-item icon-only" type="button" aria-label="Ask the agent">
+          <i data-lucide="message-circle" aria-hidden="true"></i>
+        </button>
+      </nav>
+      <div class="theme" aria-label="Display preferences"><i data-lucide="sun" aria-hidden="true"></i><i data-lucide="moon" aria-hidden="true"></i></div>
+    </header>
+    <section class="workspace">
+      <p class="workspace-title">Focused view</p>
+      <p class="workspace-copy">One shared header; only the workspace below changes between Focused, All Tasks, and Agent.</p>
+    </section>
+  </div>
+
+  <div class="choices">
+    <section class="choice-group" aria-label="Focused view icon options">
+      <h3>Focused view</h3>
+      <div class="choice-row">
+        <button class="icon-choice" type="button" data-group="focus" data-icon="target" aria-pressed="true"><i data-lucide="target" aria-hidden="true"></i><span>Target <span class="recommended">recommended</span></span></button>
+        <button class="icon-choice" type="button" data-group="focus" data-icon="eye" aria-pressed="false"><i data-lucide="eye" aria-hidden="true"></i><span>Eye</span></button>
+        <button class="icon-choice" type="button" data-group="focus" data-icon="flower-2" aria-pressed="false"><i data-lucide="flower-2" aria-hidden="true"></i><span>Zen flower</span></button>
+      </div>
+    </section>
+    <section class="choice-group" aria-label="All tasks icon options">
+      <h3>View all tasks</h3>
+      <div class="choice-row">
+        <button class="icon-choice" type="button" data-group="tasks" data-icon="list" aria-pressed="true"><i data-lucide="list" aria-hidden="true"></i><span>List <span class="recommended">recommended</span></span></button>
+        <button class="icon-choice" type="button" data-group="tasks" data-icon="list-checks" aria-pressed="false"><i data-lucide="list-checks" aria-hidden="true"></i><span>Checklist</span></button>
+        <button class="icon-choice" type="button" data-group="tasks" data-icon="layout-grid" aria-pressed="false"><i data-lucide="layout-grid" aria-hidden="true"></i><span>Grid</span></button>
+      </div>
+    </section>
+  </div>
+
+  <script>
+    (() => {
+      const root = document.getElementById("aur-nav-options");
+      const state = { focus: "target", tasks: "list", labels: true };
+
+      function render() {
+        root.querySelector(".nav-focus .icon-slot").innerHTML = `<i data-lucide="${state.focus}" aria-hidden="true"></i>`;
+        root.querySelector(".nav-tasks .icon-slot").innerHTML = `<i data-lucide="${state.tasks}" aria-hidden="true"></i>`;
+        root.querySelectorAll(".nav-label").forEach((label) => { label.hidden = !state.labels; });
+        root.querySelectorAll(".icon-choice").forEach((button) => {
+          button.setAttribute("aria-pressed", String(state[button.dataset.group] === button.dataset.icon));
+        });
+        if (globalThis.lucide) lucide.createIcons({ attrs: { "aria-hidden": "true" } });
+      }
+
+      root.querySelectorAll(".icon-choice").forEach((button) => {
+        button.addEventListener("click", () => {
+          state[button.dataset.group] = button.dataset.icon;
+          render();
+        });
+      });
+      render();
+
+      if (globalThis.Tweak) {
+        const tweak = new Tweak({ container: root, onChange: render });
+        tweak.addSelect(state, "focus", { label: "Focused icon", options: ["target", "eye", "flower-2"], reference: "nav.focus" });
+        tweak.addSelect(state, "tasks", { label: "All tasks icon", options: ["list", "list-checks", "layout-grid"], reference: "nav.tasks" });
+        tweak.addToggle(state, "labels", { label: "Show text labels", reference: "nav.labels" });
+      }
+    })();
+  </script>
+</div>

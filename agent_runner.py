@@ -108,6 +108,7 @@ class AgentRunner:
             raise ValueError("This run has no decided approvals to resume")
 
         self.store.transition_run(run.id, "running", now=now)
+        self.db.commit()
         for item in decided:
             if item.status == "approved":
                 result = self._execute_tool(item.tool_name, item.arguments, now=now)
@@ -120,7 +121,7 @@ class AgentRunner:
                 now=now,
             )
             self.store.mark_approval_consumed(item.id, now=now)
-        self.db.commit()
+            self.db.commit()
         return self._drive(run.id, now=now)
 
     def _drive(
@@ -176,6 +177,9 @@ class AgentRunner:
                 self.db.commit()
                 return self._outcome(run_id, latest_content)
 
+            # Make the call visible while its handler is still running. The UI
+            # can then pair this durable request with the tool response later.
+            self.db.commit()
             waiting = self._handle_tool_calls(run, completion, now=now)
             self.db.commit()
             if waiting:
@@ -204,6 +208,7 @@ class AgentRunner:
                     run_id=run.id,
                     now=now,
                 )
+                self.db.commit()
                 continue
             try:
                 requires_approval = self.tools.requires_approval(call.name)
@@ -214,6 +219,7 @@ class AgentRunner:
                     run_id=run.id,
                     now=now,
                 )
+                self.db.commit()
                 continue
             if requires_approval:
                 self.store.request_approval(
@@ -224,6 +230,7 @@ class AgentRunner:
                     now=now,
                 )
                 waiting = True
+                self.db.commit()
                 continue
 
             result = self._execute_tool(call.name, arguments, now=now)
@@ -233,6 +240,7 @@ class AgentRunner:
                 run_id=run.id,
                 now=now,
             )
+            self.db.commit()
         return waiting
 
     def _execute_tool(

@@ -1,0 +1,97 @@
+<div id="aur-navigation-comparison" aria-label="Comparison of labeled and icon-only application navigation">
+  <style>
+    #aur-navigation-comparison {
+      --aur-bg: light-dark(#f3f3f3, #111111);
+      --aur-panel: light-dark(#ffffff, #1e1e1e);
+      --aur-panel-subtle: light-dark(#f8f8f8, #252525);
+      --aur-hover: light-dark(#eeeeee, #383838);
+      --aur-line: light-dark(#e2e2e2, #383838);
+      --aur-text: light-dark(#1e1e1e, #f5f5f5);
+      --aur-muted: light-dark(#5f5f5f, #bdbdbd);
+      display: grid;
+      gap: 18px;
+      color-scheme: light dark;
+      color: var(--aur-text);
+      font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+    }
+    #aur-navigation-comparison .option { display: grid; gap: 7px; }
+    #aur-navigation-comparison .option-label { margin: 0; color: var(--aur-muted); font-size: 13px; font-weight: 500; }
+    #aur-navigation-comparison .mock-header { display: flex; min-height: 68px; padding: 10px 14px; align-items: center; gap: 14px; border: 1px solid var(--aur-line); border-radius: 10px; background: var(--aur-bg); }
+    #aur-navigation-comparison .brand { margin-right: auto; font-weight: 500; white-space: nowrap; }
+    #aur-navigation-comparison .view-nav { display: flex; padding: 2px; align-items: center; gap: 2px; border: 1px solid var(--aur-line); border-radius: 7px; background: var(--aur-panel-subtle); }
+    #aur-navigation-comparison .view-button { display: inline-flex; min-height: 36px; padding: 6px 10px; align-items: center; justify-content: center; gap: 7px; border: 0; border-radius: 5px; color: var(--aur-muted); background: transparent; font: inherit; }
+    #aur-navigation-comparison .view-button:hover { color: var(--aur-text); background: var(--aur-hover); }
+    #aur-navigation-comparison .view-button[aria-current="page"] { color: var(--aur-text); background: var(--aur-panel); box-shadow: 0 0 0 1px var(--aur-line); font-weight: 500; }
+    #aur-navigation-comparison .icons-only .view-button { width: 38px; padding: 0; }
+    #aur-navigation-comparison .view-button svg, #aur-navigation-comparison .theme svg { width: 18px; height: 18px; stroke-width: 1.8; }
+    #aur-navigation-comparison .theme { display: inline-flex; min-height: 32px; margin-left: 6px; padding-left: 14px; align-items: center; gap: 8px; border-left: 1px solid var(--aur-line); color: var(--aur-muted); }
+    @media (max-width: 560px) {
+      #aur-navigation-comparison .mock-header { align-items: flex-start; flex-wrap: wrap; }
+      #aur-navigation-comparison .brand { width: 100%; }
+      #aur-navigation-comparison .theme { margin-left: auto; }
+      #aur-navigation-comparison .with-labels .view-button span { display: none; }
+      #aur-navigation-comparison .with-labels .view-button { width: 38px; padding: 0; }
+    }
+  </style>
+
+  <section class="option" aria-label="Icons with labels">
+    <p class="option-label">Icons + labels</p>
+    <header class="mock-header with-labels">
+      <div class="brand">Aur Bataao</div>
+      <nav class="view-nav" aria-label="Application views with labels">
+        <button class="view-button" type="button" data-view="focus" aria-current="page"><i data-lucide="eye" aria-hidden="true"></i><span>Focused</span></button>
+        <button class="view-button" type="button" data-view="tasks"><i data-lucide="list" aria-hidden="true"></i><span>All Tasks</span></button>
+        <button class="view-button" type="button" data-view="agent"><i data-lucide="message-circle" aria-hidden="true"></i><span>Agent</span></button>
+      </nav>
+      <div class="theme" aria-label="Display preferences"><i data-lucide="sun" aria-hidden="true"></i><i data-lucide="moon" aria-hidden="true"></i></div>
+    </header>
+  </section>
+
+  <section class="option" aria-label="Icons only">
+    <p class="option-label">Icons only</p>
+    <header class="mock-header icons-only">
+      <div class="brand">Aur Bataao</div>
+      <nav class="view-nav" aria-label="Application views represented by icons">
+        <button class="view-button" type="button" data-view="focus" aria-label="Focused" data-tooltip="Focused" aria-current="page"><i data-lucide="eye" aria-hidden="true"></i></button>
+        <button class="view-button" type="button" data-view="tasks" aria-label="All Tasks" data-tooltip="All Tasks"><i data-lucide="list" aria-hidden="true"></i></button>
+        <button class="view-button" type="button" data-view="agent" aria-label="Agent" data-tooltip="Agent"><i data-lucide="message-circle" aria-hidden="true"></i></button>
+      </nav>
+      <div class="theme" aria-label="Display preferences"><i data-lucide="sun" aria-hidden="true"></i><i data-lucide="moon" aria-hidden="true"></i></div>
+    </header>
+  </section>
+
+  <script>
+    (() => {
+      const root = document.getElementById("aur-navigation-comparison");
+      const state = { activeView: "focus" };
+
+      function render() {
+        root.querySelectorAll("[data-view]").forEach((button) => {
+          if (button.dataset.view === state.activeView) button.setAttribute("aria-current", "page");
+          else button.removeAttribute("aria-current");
+        });
+      }
+
+      root.querySelectorAll("[data-view]").forEach((button) => {
+        button.addEventListener("click", () => {
+          state.activeView = button.dataset.view;
+          render();
+        });
+      });
+      render();
+
+      if (globalThis.Tweak) {
+        const tweak = new Tweak({ container: root, onChange: render });
+        tweak.addSelect(state, "activeView", {
+          label: "Active view",
+          options: [
+            { label: "Focused", value: "focus" },
+            { label: "All Tasks", value: "tasks" },
+            { label: "Agent", value: "agent" }
+          ],
+          reference: "navigation.active-view"
+        });
+      }
+    })();
+  </script>
+</div>

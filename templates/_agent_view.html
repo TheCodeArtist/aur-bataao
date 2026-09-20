@@ -1,0 +1,81 @@
+<section id="agent-workspace" class="agent-workspace app-view-panel" aria-label="Agent"{% if initial_view != 'agent' %} hidden inert{% endif %}>
+  <div class="agent-layout">
+    <aside class="agent-sidebar" aria-label="Agent conversations and settings">
+      <button id="new-conversation" class="primary" type="button">New conversation</button>
+      <nav aria-label="Conversations">
+        <h2>Conversations</h2>
+        <div id="session-list" class="session-list"></div>
+        <p id="no-sessions" class="muted">No conversations yet.</p>
+      </nav>
+
+      <details class="endpoint-settings">
+        <summary>Endpoint settings</summary>
+        <form id="profile-form">
+          <label>Saved endpoint
+            <select id="profile-select" aria-label="Saved endpoint"></select>
+          </label>
+          <button id="new-profile" class="quiet-button" type="button">Add another endpoint</button>
+          <input id="profile-id" type="hidden">
+          <label>Name
+            <input id="profile-name" required maxlength="100" autocomplete="off">
+          </label>
+          <label>Base URL
+            <input id="profile-base-url" required maxlength="500" placeholder="http://127.0.0.1:1234/v1" spellcheck="false">
+          </label>
+          <label>API key environment variable
+            <input id="profile-api-key-env" maxlength="100" placeholder="OPENAI_API_KEY" spellcheck="false">
+            <small>Only the variable name is stored. The key stays in the server environment.</small>
+          </label>
+          <div class="form-field">
+            <label for="profile-model">Model</label>
+            <div id="model-picker" class="model-picker">
+              <span class="inline-control">
+                <input id="profile-model" required maxlength="200" placeholder="Enter a model ID" spellcheck="false" autocomplete="off" role="combobox" aria-autocomplete="list" aria-haspopup="listbox" aria-expanded="false" aria-controls="model-options" aria-describedby="model-discovery-status">
+                <button id="discover-models" type="button">Discover</button>
+              </span>
+              <div id="model-options" class="model-options" role="listbox" aria-label="Models from endpoint" hidden></div>
+            </div>
+            <small id="model-discovery-status" class="model-discovery-status" aria-live="polite">Save the endpoint to discover its models.</small>
+          </div>
+          <label>Timeout (seconds)
+            <input id="profile-timeout" type="number" min="1" max="600" value="60" required>
+          </label>
+          <label class="check"><input id="profile-tools" type="checkbox" checked><span>Endpoint supports tool calling</span></label>
+          <label class="check"><input id="profile-default" type="checkbox"><span>Use as default</span></label>
+          <button class="primary" type="submit">Save endpoint</button>
+        </form>
+      </details>
+    </aside>
+
+    <section class="conversation-panel" aria-labelledby="conversation-title">
+      <header class="conversation-header">
+        <div>
+          <h1 id="conversation-title">New conversation</h1>
+          <p id="connection-status" class="muted">Choose or configure an endpoint to begin.</p>
+        </div>
+        <button id="width-toggle" class="agent-width-toggle" type="button" role="switch" aria-checked="false" aria-label="Use full viewport width" title="Use full viewport width">
+          <svg class="width-icon width-icon-expand" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4H4v5M15 4h5v5M9 20H4v-5M15 20h5v-5"></path></svg>
+          <svg class="width-icon width-icon-contract" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9h5V4M20 9h-5V4M4 15h5v5M20 15h-5v5"></path></svg>
+        </button>
+      </header>
+
+      <div id="agent-error" class="agent-error" role="alert" hidden></div>
+      <div id="message-list" class="message-list" aria-live="polite">
+        <div id="agent-empty" class="agent-empty">
+          <h2>What should we work through?</h2>
+          <p>Ask about your tasks, plan the next action, or propose an update. You approve every change before it is applied.</p>
+        </div>
+      </div>
+      <section id="approval-list" class="approval-list" aria-label="Changes awaiting approval"></section>
+
+      <form id="composer" class="composer">
+        <label class="sr-only" for="message-input">Message the agent</label>
+        <textarea id="message-input" rows="3" maxlength="8000" placeholder="Ask about your tasks…" required></textarea>
+        <div class="composer-footer">
+          <span id="composer-hint" class="muted">Read actions run automatically; changes require approval.</span>
+          <button id="send-message" class="primary" type="submit">Send</button>
+        </div>
+      </form>
+    </section>
+  </div>
+</section>

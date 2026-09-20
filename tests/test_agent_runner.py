@@ -1,4 +1,5 @@
 import json
+import sqlite3
 from datetime import datetime, timezone
 
 import pytest
@@ -132,6 +133,50 @@ def test_executes_read_tool_and_returns_result_to_model(app):
         assert tool_message["role"] == "tool"
         assert tool_result["ok"] is True
         assert tool_result["result"][0]["title"] == "Prepare launch"
+
+
+def test_commits_tool_calls_and_each_response_while_run_is_active(app):
+    with app.app_context():
+        db = get_db()
+        session = create_session(db)
+        provider = FakeProvider(
+            [
+                completion(
+                    calls=[
+                        CompletionToolCall("call-1", "list_tasks", "{}"),
+                        CompletionToolCall("call-2", "list_tasks", "{}"),
+                    ]
+                ),
+                completion("Finished both lookups."),
+            ]
+        )
+        runner = AgentRunner(
+            db,
+            app.config["TZINFO"],
+            environ={},
+            provider_factory=lambda _: provider,
+        )
+        observed_roles = []
+        execute = runner.tools.execute
+
+        def observing_execute(name, arguments, *, now=None):
+            with sqlite3.connect(app.config["DATABASE"]) as observer:
+                rows = observer.execute(
+                    "SELECT role FROM agent_messages WHERE session_id = ? ORDER BY id",
+                    (session.id,),
+                ).fetchall()
+            observed_roles.append([row[0] for row in rows])
+            return execute(name, arguments, now=now)
+
+        runner.tools.execute = observing_execute
+
+        outcome = runner.start(session.id, "Check twice", now=NOW)
+
+        assert outcome.run.status == "completed"
+        assert observed_roles == [
+            ["user", "assistant"],
+            ["user", "assistant", "tool"],
+        ]
 
 
 def test_endpoint_without_tool_support_still_provides_chat(app):

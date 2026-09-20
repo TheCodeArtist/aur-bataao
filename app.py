@@ -44,6 +44,7 @@ from task_service import (
 )
 
 TASK_VIEWS = {"focus", "manage", "blocked"}
+APP_VIEWS = TASK_VIEWS | {"agent"}
 FORM_META_FIELDS = {"return_view", "expand", "task_id"}
 NOTICE_MESSAGES = {
     "task-created": "Task added",
@@ -868,7 +869,7 @@ def register_routes(app: Flask) -> None:
         maybe_reconcile()
         tasks, choices = load_tasks()
         initial_view = request.args.get("view", "focus")
-        if initial_view not in TASK_VIEWS:
+        if initial_view not in APP_VIEWS:
             initial_view = "focus"
         expanded_task_id = _query_task_id("expanded")
         created_task_id = _query_task_id("created")
@@ -946,12 +947,6 @@ def register_routes(app: Flask) -> None:
                 max_upload_bytes=current_app.config["MAX_CONTENT_LENGTH"],
             )
         )
-        response.headers["Cache-Control"] = "no-store"
-        return response
-
-    @app.get("/agent")
-    def agent_page():
-        response = make_response(render_template("agent.html"))
         response.headers["Cache-Control"] = "no-store"
         return response
 

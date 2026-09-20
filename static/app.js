@@ -1,4 +1,10 @@
 const toast = document.querySelector("#toast");
+const taskWorkspace = document.querySelector("#task-workspace");
+const agentWorkspace = document.querySelector("#agent-workspace");
+const viewNavigation = document.querySelector(".app-view-nav");
+const viewNavigationLockMessage = document.querySelector("#view-navigation-lock-message");
+const viewNavigationLockCopy = document.querySelector("#view-navigation-lock-copy");
+const appViewLinks = [...document.querySelectorAll("[data-app-view]")];
 const maxAttachmentBytes = Number(document.body.dataset.maxAttachmentBytes);
 const maxAttachmentsPerTask = Number(document.body.dataset.maxAttachments);
 const maxUploadBytes = Number(document.body.dataset.maxUploadBytes);
@@ -6,6 +12,13 @@ const themeStorageKey = "aur-bataao-theme";
 const themeToggle = document.querySelector("#theme-toggle");
 const darkModePreference = window.matchMedia("(prefers-color-scheme: dark)");
 let toastTimer;
+let currentAppView = "focus";
+let lastTaskView = "focus";
+let tasksStale = false;
+let pendingTaskWrites = 0;
+let agentMutationPending = false;
+const dirtyTaskControls = new Set();
+const taskControlBaselines = new WeakMap();
 
 function savedTheme() {
   try {
@@ -173,6 +186,110 @@ function submitTaskAttachments(zone, files) {
   zone.querySelectorAll("button").forEach((control) => { control.disabled = true; });
   zone.closest("form").requestSubmit();
 }
+window.addEventListener("app:notify", (event) => {
+  notify(event.detail?.message || "", Boolean(event.detail?.error));
+});
+
+window.addEventListener("beforeunload", (event) => {
+  if (dirtyTaskControls.size === 0) return;
+  event.preventDefault();
+  event.returnValue = "";
+});
+
+function taskEditControl(control) {
+  if (!(control instanceof HTMLInputElement
+    || control instanceof HTMLTextAreaElement
+    || control instanceof HTMLSelectElement)) return false;
+  if (!control.closest("#task-workspace .task-card, #new-task-dialog, #follow-up-dialog")) return false;
+  if (control.matches('[type="hidden"], [type="file"], .status-select, .due-date, [data-task-label-option]')) return false;
+  return true;
+}
+
+function taskControlValue(control) {
+  if (control instanceof HTMLInputElement && ["checkbox", "radio"].includes(control.type)) {
+    return String(control.checked);
+  }
+  return control.value;
+}
+
+function setTaskControlBaseline(control) {
+  taskControlBaselines.set(control, taskControlValue(control));
+  dirtyTaskControls.delete(control);
+  updateViewNavigationLock();
+}
+
+function updateTaskControlDirtyState(control) {
+  if (!taskControlBaselines.has(control)) {
+    taskControlBaselines.set(control, control instanceof HTMLInputElement && ["checkbox", "radio"].includes(control.type)
+      ? String(control.defaultChecked)
+      : control.defaultValue);
+  }
+  const dirty = taskControlValue(control) !== taskControlBaselines.get(control);
+  if (dirty) dirtyTaskControls.add(control);
+  else dirtyTaskControls.delete(control);
+  updateViewNavigationLock();
+}
+
+function viewNavigationLocked() {
+  return dirtyTaskControls.size > 0 || pendingTaskWrites > 0 || agentMutationPending;
+}
+
+function updateViewNavigationLock(announce = false) {
+  const locked = viewNavigationLocked();
+  viewNavigationLockCopy.textContent = agentMutationPending
+    ? "Agent is updating tasks"
+    : "Finish editing to switch views";
+  viewNavigation.classList.toggle("is-edit-locked", locked);
+  viewNavigationLockMessage.hidden = !locked;
+  appViewLinks.forEach((link) => {
+    if (locked) {
+      link.setAttribute("aria-disabled", "true");
+      link.setAttribute("aria-describedby", viewNavigationLockMessage.id);
+    } else {
+      link.removeAttribute("aria-disabled");
+      link.removeAttribute("aria-describedby");
+    }
+  });
+  if (announce && locked) notify(agentMutationPending
+    ? "Wait for the Agent task update to finish"
+    : "Finish editing before switching views");
+}
+
+window.addEventListener("agent:task-mutation-start", () => {
+  agentMutationPending = true;
+  updateViewNavigationLock();
+});
+window.addEventListener("agent:task-mutation-end", () => {
+  agentMutationPending = false;
+  updateViewNavigationLock();
+});
+window.addEventListener("agent:tasks-mutated", () => {
+  tasksStale = true;
+});
+
+document.addEventListener("focusin", (event) => {
+  if (taskEditControl(event.target) && !taskControlBaselines.has(event.target)) {
+    taskControlBaselines.set(event.target, taskControlValue(event.target));
+  }
+});
+document.addEventListener("input", (event) => {
+  if (taskEditControl(event.target)) updateTaskControlDirtyState(event.target);
+});
+document.addEventListener("change", (event) => {
+  if (taskEditControl(event.target)) updateTaskControlDirtyState(event.target);
+});
+document.addEventListener("reset", (event) => {
+  queueMicrotask(() => {
+    event.target.querySelectorAll("input, textarea, select").forEach((control) => {
+      if (taskEditControl(control)) setTaskControlBaseline(control);
+    });
+  });
+});
+viewNavigation.addEventListener("pointerdown", (event) => {
+  if (!viewNavigationLocked() || !event.target.closest("[data-app-view]")) return;
+  event.preventDefault();
+  updateViewNavigationLock(true);
+});
 
 function renderLabels(row, labels) {
   const detailList = row.querySelector(".task-details .label-list");
@@ -310,6 +427,8 @@ async function patchControl(control) {
   const value = control.value;
   if (value === previous) return;
   control.dataset.previous = value;
+  pendingTaskWrites += 1;
+  updateViewNavigationLock();
   try {
     const result = await api(`/api/tasks/${row.dataset.taskId}`, {
       method: "PATCH",
@@ -324,10 +443,15 @@ async function patchControl(control) {
       fieldControl.dataset.previous = fieldControl.value;
     });
     applyTask(row, result.task);
+    setTaskControlBaseline(control);
   } catch (error) {
     control.value = previous;
     control.dataset.previous = previous;
+    setTaskControlBaseline(control);
     notify(error.message, true);
+  } finally {
+    pendingTaskWrites = Math.max(0, pendingTaskWrites - 1);
+    updateViewNavigationLock();
   }
 }
 
@@ -397,8 +521,11 @@ let pendingAttachments = [];
 let newTaskReturnView = "focus";
 
 function currentTaskView() {
-  if (!document.body.classList.contains("manage-mode")) return "focus";
-  return blockedView ? "blocked" : "manage";
+  if (currentAppView === "manage" || currentAppView === "blocked") {
+    return blockedView ? "blocked" : "manage";
+  }
+  if (currentAppView === "focus") return "focus";
+  return lastTaskView;
 }
 
 function showTaskView(view) {
@@ -604,6 +731,10 @@ followUpDialog.querySelector(".cancel-follow-up").addEventListener("click", () =
 followUpDialog.addEventListener("click", (event) => {
   if (event.target === followUpDialog) followUpDialog.close();
 });
+followUpDialog.addEventListener("close", () => {
+  followUpForm.reset();
+  followUpForm.querySelector("button[type='submit']").disabled = false;
+});
 followUpForm.addEventListener("submit", () => {
   const button = followUpForm.querySelector("button[type='submit']");
   button.disabled = true;
@@ -801,8 +932,32 @@ let focusTaskId = document.querySelector(".task-row.is-focus-task")?.dataset.tas
 const focusEmptyState = document.querySelector("#focus-empty-state");
 const focusNextAction = document.querySelector("#focus-next-action");
 const aurBataaoButton = document.querySelector("#aur-bataao-button");
-const viewToggle = document.querySelector("#view-toggle");
-const viewToggleLabel = viewToggle.querySelector(".view-toggle-label");
+
+function updateAppViewNavigation(view) {
+  const activeView = view === "manage" || view === "blocked" ? "manage" : "focus";
+  const currentView = view === "agent" ? "agent" : activeView;
+  const names = { focus: "Focused", manage: "All Tasks", agent: "Agent" };
+  appViewLinks.forEach((link) => {
+    if (link.dataset.appView === currentView) {
+      link.setAttribute("aria-current", "page");
+      link.setAttribute("aria-label", names[link.dataset.appView]);
+    } else {
+      link.removeAttribute("aria-current");
+      link.setAttribute("aria-label", `Switch to ${names[link.dataset.appView]}`);
+    }
+  });
+}
+
+function setWorkspaceVisibility(showAgent) {
+  taskWorkspace.hidden = showAgent;
+  taskWorkspace.inert = showAgent;
+  agentWorkspace.hidden = !showAgent;
+  agentWorkspace.inert = !showAgent;
+}
+
+function announceViewChange(view) {
+  window.dispatchEvent(new CustomEvent("app:viewchange", { detail: { view } }));
+}
 
 function actionableTaskRows() {
   return taskRows()
@@ -833,30 +988,78 @@ function showAnotherTask(currentRow) {
 }
 
 function showManageView({ blockedOnly = false } = {}) {
-  document.body.classList.remove("focus-mode");
+  document.body.classList.remove("focus-mode", "agent-mode");
   document.body.classList.add("manage-mode");
-  viewToggleLabel.textContent = "Aur Bataao";
-  viewToggle.setAttribute("aria-label", "Switch to Aur Bataao view");
   blockedView = blockedOnly;
+  currentAppView = blockedOnly ? "blocked" : "manage";
+  lastTaskView = currentAppView;
+  setWorkspaceVisibility(false);
+  updateAppViewNavigation(currentAppView);
   blockedViewIndicator.hidden = !blockedOnly;
   applyFilters();
+  document.title = "All Tasks · Aur Bataao";
+  announceViewChange(currentAppView);
 }
 
 function showFocusView() {
-  document.body.classList.remove("manage-mode");
+  document.body.classList.remove("manage-mode", "agent-mode");
   document.body.classList.add("focus-mode");
-  viewToggleLabel.textContent = "View all tasks";
-  viewToggle.setAttribute("aria-label", "Switch to all tasks view");
+  currentAppView = "focus";
+  lastTaskView = "focus";
+  setWorkspaceVisibility(false);
+  updateAppViewNavigation("focus");
   renderFocusView();
+  document.title = "Focused · Aur Bataao";
+  announceViewChange("focus");
 }
 
-viewToggle.setAttribute("aria-label", "Switch to all tasks view");
-viewToggle.addEventListener("click", () => {
-  if (document.body.classList.contains("focus-mode")) {
-    showManageView();
-  } else {
-    showFocusView();
+function showAgentView() {
+  document.body.classList.remove("focus-mode", "manage-mode");
+  document.body.classList.add("agent-mode");
+  currentAppView = "agent";
+  setWorkspaceVisibility(true);
+  updateAppViewNavigation("agent");
+  document.title = "Agent · Aur Bataao";
+  announceViewChange("agent");
+}
+
+function showAppView(view) {
+  if (view === "agent") showAgentView();
+  else showTaskView(view);
+}
+
+appViewLinks.forEach((link) => {
+  link.addEventListener("click", (event) => {
+    if (event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+    event.preventDefault();
+    if (viewNavigationLocked()) {
+      updateViewNavigationLock(true);
+      return;
+    }
+    if (link.getAttribute("aria-current") === "page") return;
+    const view = link.dataset.appView;
+    if (view !== "agent" && tasksStale) {
+      location.assign(link.href);
+      return;
+    }
+    showAppView(view);
+    history.pushState({ view }, "", link.href);
+  });
+});
+window.addEventListener("popstate", () => {
+  if (viewNavigationLocked()) {
+    const currentUrl = new URL(location.href);
+    currentUrl.searchParams.set("view", currentAppView);
+    history.pushState({ view: currentAppView }, "", currentUrl);
+    updateViewNavigationLock(true);
+    return;
   }
+  const view = new URL(location.href).searchParams.get("view") || "focus";
+  if (view !== "agent" && tasksStale) {
+    location.reload();
+    return;
+  }
+  showAppView(["focus", "manage", "blocked", "agent"].includes(view) ? view : "focus");
 });
 document.querySelector("#view-blocked-tasks").addEventListener("click", () => {
   searchFilter.value = "";
@@ -1064,7 +1267,7 @@ sortControl.addEventListener("change", () => setSortMode(sortControl.value));
 applyFilters();
 setSortMode(savedSortPreference(), false);
 renderFocusView();
-showTaskView(document.body.dataset.initialView || "focus");
+showAppView(document.body.dataset.initialView || "focus");
 if (document.body.dataset.error) {
   notify(document.body.dataset.error, true);
 } else if (document.body.dataset.notice) {

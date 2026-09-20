@@ -918,9 +918,17 @@ def test_index_renders_compact_task_ui(client):
     assert b'id="sort-control"' in response.data
     assert b'class="rank-handle"' in response.data
     assert b'data-rank-key=' in response.data
-    assert b'id="view-toggle"' in response.data
-    assert b'<span class="view-toggle-prompt" aria-hidden="true">Switch Mode to</span>' in response.data
-    assert b'<span class="view-toggle-label">View all tasks</span>' in response.data
+    assert b'id="focus-view-link"' in response.data
+    assert b'id="manage-view-link"' in response.data
+    assert b'id="agent-view-link"' in response.data
+    assert b'chat-bubble-icon' in response.data
+    assert b'href="/?view=focus" data-app-view="focus" data-task-view="focus" aria-label="Focused" aria-current="page"' in response.data
+    assert b'href="/?view=manage" data-app-view="manage" data-task-view="manage" aria-label="Switch to All Tasks"' in response.data
+    assert b'>Switch to Focused</span>' in response.data
+    assert b'>Switch to All Tasks</span>' in response.data
+    assert b'>Switch to Agent</span>' in response.data
+    assert b'class="app-view-prompt-current">Focused</span>' in response.data
+    assert b'id="view-toggle"' not in response.data
     assert b'id="view-all-tasks"' not in response.data
     assert b'id="back-to-aur-bataao"' not in response.data
     assert b'class="toggle-chevron"' in response.data
@@ -1205,6 +1213,44 @@ def test_index_renders_accessible_theme_toggle(client):
     assert "--theme-toggle-travel: 26px;" in theme
     assert "*, *::before, *::after { box-sizing: border-box; }" in controls
     assert "border: 0;" in controls.split(".theme-toggle {", 1)[1].split("}", 1)[0]
+
+
+def test_single_shell_navigation_locks_while_task_edits_are_dirty(client):
+    create_task(client, "Editable task")
+    page = client.get("/?view=manage").get_data(as_text=True)
+    script = (Path(__file__).parents[1] / "static" / "app.js").read_text(
+        encoding="utf-8"
+    )
+    controls = (Path(__file__).parents[1] / "static" / "controls.css").read_text(
+        encoding="utf-8"
+    )
+
+    assert page.count('class="app-header"') == 1
+    assert page.count('id="theme-toggle"') == 1
+    assert 'id="view-navigation-lock-message"' in page
+    assert "Finish editing to switch views" in page
+    assert "dirtyTaskControls.size > 0 || pendingTaskWrites > 0" in script
+    assert 'link.setAttribute("aria-disabled", "true")' in script
+    assert 'link.setAttribute("aria-describedby", viewNavigationLockMessage.id)' in script
+    assert 'viewNavigation.addEventListener("pointerdown"' in script
+    assert 'window.addEventListener("beforeunload"' in script
+    assert "history.pushState({ view: currentAppView }" in script
+    assert ".app-view-nav.is-edit-locked" in controls
+    assert '.app-view-link[aria-disabled="true"]' in controls
+
+
+def test_single_shell_renders_each_canonical_view_without_agent_alias(client):
+    focus = client.get("/?view=focus").get_data(as_text=True)
+    manage = client.get("/?view=manage").get_data(as_text=True)
+    agent = client.get("/?view=agent").get_data(as_text=True)
+
+    assert 'data-initial-view="focus"' in focus
+    assert 'data-initial-view="manage"' in manage
+    assert 'data-initial-view="agent"' in agent
+    assert 'class="focus-mode' in focus
+    assert 'class="manage-mode' in manage
+    assert 'class="agent-mode' in agent
+    assert client.get("/agent").status_code == 404
 
 
 def test_index_renders_native_date_control(client):

@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 
 from app import create_app, get_db
@@ -181,11 +183,116 @@ def test_agent_session_requires_a_configured_profile(client):
 
 
 def test_agent_workspace_is_linked_from_the_task_app(client):
-    workspace = client.get("/agent")
+    workspace = client.get("/?view=agent")
     tasks = client.get("/")
 
     assert workspace.status_code == 200
-    assert b"Interactive agent" in workspace.data
+    assert client.get("/agent").status_code == 404
+    assert workspace.data.count(b'class="app-header"') == 1
+    assert workspace.data.count(b'id="theme-toggle"') == 1
     assert b'id="profile-form"' in workspace.data
     assert b'id="approval-list"' in workspace.data
-    assert b'href="/agent"' in tasks.data
+    assert b'id="width-toggle"' in workspace.data
+    assert b'id="profile-model"' in workspace.data
+    assert b'role="combobox"' in workspace.data
+    assert b'id="model-options"' in workspace.data
+    assert b'role="listbox"' in workspace.data
+    assert b'id="model-discovery-status"' in workspace.data
+    assert b'>Discover</button>' in workspace.data
+    assert workspace.data.index(b'id="profile-api-key-env"') < workspace.data.index(b'id="profile-model"')
+    assert b'<span>Endpoint supports tool calling</span>' in workspace.data
+    assert b'<span>Use as default</span>' in workspace.data
+    assert b'id="focus-view-link"' in workspace.data
+    assert b'id="manage-view-link"' in workspace.data
+    assert b'id="agent-view-link"' in workspace.data
+    assert b'chat-bubble-icon' in workspace.data
+    assert b'aria-label="Agent" aria-current="page"' in workspace.data
+    assert workspace.data.count(b'class="app-view-link-prompt"') == 3
+    assert b'class="app-view-prompt-current">Agent</span>' in workspace.data
+    assert workspace.data.index(b'class="app-view-nav"') < workspace.data.index(b'class="header-preferences"')
+    assert workspace.data.index(b'class="header-preferences"') < workspace.data.index(b'id="theme-toggle"')
+    assert workspace.data.index(b'class="conversation-header"') < workspace.data.index(b'id="width-toggle"')
+    assert b'href="/?view=agent"' in tasks.data
+    assert b'id="task-workspace"' in workspace.data
+    assert b'id="agent-workspace"' in workspace.data
+    assert b'id="agent-workspace" class="agent-workspace app-view-panel" aria-label="Agent">' in workspace.data
+    assert b'id="task-workspace" class="task-workspace app-view-panel" aria-label="Tasks" hidden inert' in workspace.data
+
+
+def test_agent_workspace_styles_width_mode_and_checkbox_rows():
+    static_dir = Path(__file__).parents[1] / "static"
+    styles = (static_dir / "agent.css").read_text()
+    controls = (static_dir / "controls.css").read_text()
+
+    assert '.agent-layout[data-width="full"]' in styles
+    assert ".agent-header" not in styles
+    assert ".agent-workspace" in styles
+    assert ".app-header .app-view-nav" in controls
+    assert ".agent-header .app-view-nav" not in controls
+    assert "transform: translateX(-50%);" in controls
+    assert '.agent-layout[data-width="full"] .message-list' in styles
+    assert '.agent-layout[data-width="full"] .agent-message {' in styles
+    assert '.agent-layout[data-width="full"] .agent-message.assistant' in styles
+    assert "width: calc(100% - 32px);" in styles
+    assert "max-width: none;" in styles
+    assert '.agent-layout[data-width="full"] .agent-message.user' in styles
+    assert "max-width: 88%;" in styles
+    assert '.agent-layout[data-width="full"] .agent-message.tool[open]' in styles
+    assert '#profile-form input:not([type="checkbox"])' in styles
+    assert "#profile-form input," not in styles
+    check_rule = styles.split(".check {", 1)[1].split("}", 1)[0]
+    checkbox_rule = styles.split('.check input[type="checkbox"] {', 1)[1].split("}", 1)[0]
+    assert "display: flex;" in check_rule
+    assert "align-items: center;" in check_rule
+    assert "margin: 0;" in checkbox_rule
+    assert "flex: 0 0 auto;" in checkbox_rule
+
+
+def test_agent_messages_use_safe_markdown_rendering_for_both_roles():
+    static_dir = Path(__file__).parents[1] / "static"
+    script = (static_dir / "agent.js").read_text()
+    markdown = (static_dir / "markdown.js").read_text()
+    styles = (static_dir / "agent.css").read_text()
+
+    assert 'import { renderMarkdown } from "./markdown.js";' in script
+    assert script.count("renderMarkdown(item,") == 3
+    assert "target.replaceChildren();" in markdown
+    assert "target.innerHTML" not in markdown
+    assert 'SAFE_LINK_PROTOCOLS = new Set(["http:", "https:", "mailto:"])' in markdown
+    assert ".markdown-body pre" in styles
+    assert ".markdown-body table" in styles
+
+
+def test_agent_tool_calls_render_as_live_collapsible_pairs():
+    static_dir = Path(__file__).parents[1] / "static"
+    script = (static_dir / "agent.js").read_text()
+    styles = (static_dir / "agent.css").read_text()
+
+    assert "function createToolCall(call, runStatus)" in script
+    assert "`Running ${name}" in script
+    assert "`Ran ${view.name}`" in script
+    assert 'responseValue.textContent = "Awaiting tool response' in script
+    assert "apiWithSessionPolling" in script
+    assert ".tool-details" in styles
+
+
+def test_agent_lifecycle_badges_and_task_invalidation_are_shell_integrated():
+    static_dir = Path(__file__).parents[1] / "static"
+    agent_script = (static_dir / "agent.js").read_text()
+    app_script = (static_dir / "app.js").read_text()
+    controls = (static_dir / "controls.css").read_text()
+
+    assert "function initializeAgent()" in agent_script
+    assert "if (agentIsVisible()) enterAgentView();" in agent_script
+    assert not agent_script.rstrip().endswith("initialize();")
+    assert 'window.addEventListener("app:viewchange"' in agent_script
+    assert "themeToggle" not in agent_script
+    assert "normalUpdate: false" in agent_script
+    assert "warningSources: new Set()" in agent_script
+    assert 'agentUpdateBadge.dataset.kind = warning ? "warning" : "normal"' in agent_script
+    assert "function clearAgentBadges()" in agent_script
+    assert 'new CustomEvent("agent:task-mutation-start")' in agent_script
+    assert 'new CustomEvent("agent:tasks-mutated")' in agent_script
+    assert 'window.addEventListener("agent:tasks-mutated"' in app_script
+    assert "tasksStale = true" in app_script
+    assert '.agent-update-badge[data-kind="warning"]' in controls

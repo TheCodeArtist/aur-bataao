@@ -1,3 +1,4 @@
+{% from "_view_nav.html" import view_nav %}
 <!doctype html>
 <html lang="en">
 <head>
@@ -19,9 +20,11 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='theme.css') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='controls.css') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='agent.css') }}">
   <script type="module" src="{{ url_for('static', filename='app.js') }}"></script>
+  <script type="module" src="{{ url_for('static', filename='agent.js') }}"></script>
 </head>
-<body class="{{ 'manage-mode' if initial_view in ['manage', 'blocked'] else 'focus-mode' }}{% if focus_task_id %} has-actionable{% else %} focus-empty{% endif %}"
+<body class="{{ 'agent-mode' if initial_view == 'agent' else ('manage-mode' if initial_view in ['manage', 'blocked'] else 'focus-mode') }}{% if focus_task_id %} has-actionable{% else %} focus-empty{% endif %}"
   data-initial-view="{{ initial_view }}"
   data-notice="{{ notice_message }}"
   data-error="{{ error_message }}"
@@ -32,34 +35,34 @@
   data-max-upload-bytes="{{ max_upload_bytes }}"
 >
   <main class="shell">
+    {% set in_progress_count = tasks|selectattr('status', 'equalto', 'in_progress')|list|length %}
+    {% set follow_up_count = tasks|selectattr('follow_up_due')|list|length %}
     <header class="app-header">
       <div class="app-identity">
-        <h1 class="app-title">
+        <div class="app-title">
           <img class="app-icon" src="{{ url_for('static', filename='aur-bataao-icon.png') }}" alt="Aur Bataao" width="56" height="56">
-        </h1>
-        {% set in_progress_count = tasks|selectattr('status', 'equalto', 'in_progress')|list|length %}
-        {% set follow_up_count = tasks|selectattr('follow_up_due')|list|length %}
-        <span id="active-task-count" class="muted"{% if not in_progress_count and not follow_up_count %} hidden{% endif %}>{% if in_progress_count %}{{ in_progress_count }} in progress{% endif %}{% if in_progress_count and follow_up_count %} · {% endif %}{% if follow_up_count %}{{ follow_up_count }} {% if follow_up_count == 1 %}needs{% else %}need{% endif %} follow-up{% endif %}</span>
+        </div>
       </div>
       <div class="header-actions">
-        <a class="quiet-button header-link" href="{{ url_for('agent_page') }}">Ask the agent</a>
-        <button id="theme-toggle" class="theme-toggle" type="button" role="switch" aria-checked="false" aria-label="Switch to dark mode" title="Switch to dark mode">
-          <svg class="theme-icon theme-icon-sun" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-            <circle cx="12" cy="12" r="3.5"></circle>
-            <path d="M12 2v2M12 20v2M4.93 4.93l1.42 1.42M17.65 17.65l1.42 1.42M2 12h2M20 12h2M4.93 19.07l1.42-1.42M17.65 6.35l1.42-1.42"></path>
-          </svg>
-          <svg class="theme-icon theme-icon-moon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-            <path d="M20 15.2A8.5 8.5 0 0 1 8.8 4a8.5 8.5 0 1 0 11.2 11.2Z"></path>
-          </svg>
-        </button>
-        <button id="view-toggle" type="button" class="quiet-button">
-          <span class="view-toggle-prompt" aria-hidden="true">Switch Mode to</span>
-          <span class="view-toggle-label">{{ 'Aur Bataao' if initial_view in ['manage', 'blocked'] else 'View all tasks' }}</span>
-        </button>
-        <button id="open-task-dialog" type="button" class="primary new-task-button open-task-dialog">Add a Task...</button>
+        {{ view_nav('agent' if initial_view == 'agent' else ('manage' if initial_view in ['manage', 'blocked'] else 'focus')) }}
+        <div class="header-preferences" aria-label="Display preferences">
+          <button id="theme-toggle" class="theme-toggle" type="button" role="switch" aria-checked="false" aria-label="Switch to dark mode" title="Switch to dark mode">
+            <svg class="theme-icon theme-icon-sun" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <circle cx="12" cy="12" r="3.5"></circle>
+              <path d="M12 2v2M12 20v2M4.93 4.93l1.42 1.42M17.65 17.65l1.42 1.42M2 12h2M20 12h2M4.93 19.07l1.42-1.42M17.65 6.35l1.42-1.42"></path>
+            </svg>
+            <svg class="theme-icon theme-icon-moon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <path d="M20 15.2A8.5 8.5 0 0 1 8.8 4a8.5 8.5 0 1 0 11.2 11.2Z"></path>
+            </svg>
+          </button>
+        </div>
       </div>
     </header>
 
+    <section id="task-workspace" class="task-workspace app-view-panel" aria-label="Tasks"{% if initial_view == 'agent' %} hidden inert{% endif %}>
+    <div class="task-view-summary manage-only">
+      <span id="active-task-count" class="muted"{% if not in_progress_count and not follow_up_count %} hidden{% endif %}>{% if in_progress_count %}{{ in_progress_count }} in progress{% endif %}{% if in_progress_count and follow_up_count %} · {% endif %}{% if follow_up_count %}{{ follow_up_count }} {% if follow_up_count == 1 %}needs{% else %}need{% endif %} follow-up{% endif %}</span>
+    </div>
     <section class="toolbar manage-only" aria-label="Task filters">
       <input id="search-filter" type="search" placeholder="Filter tasks…" aria-label="Filter tasks">
       <details
@@ -112,6 +115,7 @@
         <option value="smart">Sort: Smart</option>
         <option value="rank">Sort: Rank</option>
       </select>
+      <button id="open-task-dialog" type="button" class="primary new-task-button open-task-dialog">Add a Task...</button>
     </section>
 
     <div id="blocked-view-indicator" class="blocked-view-indicator manage-only" hidden>
@@ -544,6 +548,9 @@
         <button type="button" class="primary open-task-dialog">Add a Task...</button>
       </div>
     </section>
+    </section>
+
+    {% include "_agent_view.html" %}
   </main>
 
   <footer class="app-footer">

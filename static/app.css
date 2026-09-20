@@ -9,7 +9,10 @@ body {
   background: var(--bg);
   color: var(--text);
 }
-.shell { flex: 1 0 auto; width: min(1180px, calc(100% - 24px)); margin: 18px auto; }
+.shell { flex: 1 0 auto; width: 100%; margin: 18px 0; }
+.app-header,
+.task-workspace { width: min(1180px, calc(100% - 24px)); margin-right: auto; margin-left: auto; }
+.app-view-panel[hidden] { display: none !important; }
 .app-footer {
   flex: 0 0 auto;
   width: min(1180px, calc(100% - 24px));
@@ -19,57 +22,17 @@ body {
   text-align: center;
   opacity: 0.72;
 }
-.app-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 10px; }
+.app-header { position: relative; display: flex; min-height: 56px; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 14px; }
 .app-identity { display: flex; align-items: center; gap: 10px; }
 .app-title { margin: 0; line-height: 0; }
 .app-icon { display: block; width: 56px; height: 56px; border-radius: 10px; object-fit: contain; }
 .header-actions { display: flex; align-items: center; gap: 7px; }
-.header-link {
-  display: inline-flex;
-  min-height: var(--control-height);
-  padding: 0.38rem 0.65rem;
-  align-items: center;
-  border-radius: 5px;
-  color: var(--muted);
-  text-decoration: none;
-}
-.header-link:hover { color: var(--text); background: var(--surface-hover); }
-#view-toggle {
-  position: relative;
-  display: inline-flex;
-  width: 112px;
-  align-items: center;
-  justify-content: center;
-}
-.view-toggle-prompt {
-  position: absolute;
-  top: 0;
-  left: 50%;
-  padding: 0 4px;
-  transform: translate(-50%, -50%);
-  color: var(--muted);
-  background: var(--bg);
-  font-size: 0.68rem;
-  line-height: 1;
-  opacity: 0;
-  white-space: nowrap;
-  pointer-events: none;
-  transition: opacity 120ms ease;
-}
-#view-toggle:is(:hover, :focus-visible) .view-toggle-prompt {
-  opacity: 1;
-}
 
 /* Focus view */
 body.focus-mode .manage-only,
 body.manage-mode .focus-only { display: none !important; }
 body.focus-mode #active-task-count { display: none; }
-body.focus-mode .header-actions .new-task-button {
-  visibility: hidden;
-  pointer-events: none;
-}
-
-body.focus-mode .app-header { margin-bottom: 22px; }
+body.agent-mode .app-footer { display: none; }
 body.focus-mode .task-card:not(.is-focus-task) { display: none; }
 body.focus-mode .task-list { gap: 0; }
 body.focus-mode .task-card.is-focus-task {
@@ -266,6 +229,8 @@ body:has(.new-task-dialog[open]) { overflow: hidden; }
 .follow-up-dialog .dialog-actions button { min-width: 92px; }
 
 /* Backlog filters */
+.task-view-summary { min-height: 18px; padding: 0 7px; font-size: 0.78rem; }
+.task-view-summary:has(#active-task-count[hidden]) { display: none; }
 .toolbar { display: flex; align-items: center; gap: 7px; padding: 7px; margin-bottom: 8px; background: transparent; border-radius: var(--radius); }
 .toolbar input[type="search"] { width: 220px; }
 .toolbar .check { margin-left: 4px; }
@@ -544,9 +509,12 @@ button.task-label-filter[aria-pressed="true"] { color: var(--accent-text); backg
 }
 
 @media (max-width: 620px) {
-  .shell { width: min(100% - 12px, 1180px); margin-top: 8px; }
+  .shell { margin-top: 8px; }
+  .app-header, .task-workspace { width: min(100% - 12px, 1180px); }
   .app-header { align-items: stretch; flex-direction: column; gap: 8px; }
-  .header-actions { align-self: flex-start; }
+  .header-actions { width: 100%; align-self: stretch; flex-wrap: wrap; }
+  .header-actions .app-view-nav { position: relative; left: auto; transform: none; }
+  .header-preferences { margin-left: auto; }
   .new-task-dialog { padding: 16px; }
   .attachment-dropzone { align-items: stretch; flex-direction: column; }
   .attachment-dropzone button { align-self: flex-start; }

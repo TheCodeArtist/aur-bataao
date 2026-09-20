@@ -20,14 +20,14 @@ vanilla JavaScript, and SQLite.
 
 ## Interactive agent
 
-Open **Ask the agent** from the task header, or browse directly to
-<http://127.0.0.1:8080/agent>. The workspace supports multiple named profiles
+Open **Agent** from the shared view navigation, or browse directly to
+<http://127.0.0.1:8080/?view=agent>. The workspace supports multiple named profiles
 for local or remote OpenAI-compatible endpoints.
 
 An endpoint needs the Chat Completions API for chat. Tool-capable models can
 also inspect and update task data. Profiles without tool support remain usable
-for ordinary conversation. The models endpoint is optional: enter the model
-name manually if **List** is not supported.
+for ordinary conversation. Use **Discover** to search and select a model exposed
+by the endpoint, or enter its model ID manually when discovery is unsupported.
 
 Read-only tools run automatically. Every task mutation is shown with its exact
 arguments and pauses until it is approved or rejected. Conversations, runs,
