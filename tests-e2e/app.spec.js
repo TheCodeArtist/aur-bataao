@@ -295,24 +295,23 @@ test("organizes conversations and persists agent width", async ({ page }) => {
   await expect(planningGroup.getByRole("button", { name: "Expand folder Planning" })).toHaveAttribute(
     "aria-expanded", "false",
   );
+  const width = page.locator("#width-toggle");
+  await width.click();
+  await expect(width).toHaveAttribute("aria-checked", "true");
   await page.reload();
   const reloadedPlanningGroup = page.locator('.session-group[data-folder-key^="folder-"]').filter({
     has: page.getByRole("heading", { name: "Planning" }),
   });
   await expect(reloadedPlanningGroup.locator(".session-group-items")).toBeHidden();
+  await expect(width).toHaveAttribute("aria-checked", "true");
   await reloadedPlanningGroup.getByRole("button", { name: "Expand folder Planning" }).click();
   await expect(reloadedPlanningGroup.getByRole("button", {
     name: "Organize this conversation", exact: true,
   })).toBeVisible();
-
-  const width = page.locator("#width-toggle");
-  await width.click();
-  await expect(width).toHaveAttribute("aria-checked", "true");
-  await page.reload();
-  await expect(page.getByRole("switch", { name: "Use centered width" })).toHaveAttribute(
-    "aria-checked",
-    "true",
-  );
+  await reloadedPlanningGroup.getByRole("button", { name: "Collapse folder Planning" }).click();
+  await expect(reloadedPlanningGroup.locator(".session-group-items")).toBeHidden();
+  await reloadedPlanningGroup.getByRole("button", { name: "Expand folder Planning" }).click();
+  await expect(reloadedPlanningGroup.locator(".session-group-items")).toBeVisible();
 
   page.once("dialog", (dialog) => dialog.accept());
   await page.getByRole("button", { name: "Remove folder Planning" }).click();
@@ -320,6 +319,24 @@ test("organizes conversations and persists agent width", async ({ page }) => {
   await page.getByRole("button", { name: "New conversation" }).click();
   await expect(page.getByRole("heading", { name: "New conversation" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "What should we work through?" })).toBeVisible();
+});
+
+
+test("keeps Agent folders usable when browser storage is unavailable", async ({ page }) => {
+  await page.addInitScript(() => {
+    Storage.prototype.getItem = () => { throw new Error("storage blocked"); };
+    Storage.prototype.setItem = () => { throw new Error("storage blocked"); };
+  });
+  await page.goto("/?view=agent");
+  await page.getByLabel("Message the agent").fill("Keep folders usable without storage");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.locator("#message-list")).toContainText("browser test agent is ready");
+
+  const unfiledGroup = page.locator('.session-group[data-folder-key="unfiled"]');
+  await unfiledGroup.getByRole("button", { name: "Collapse folder No folder" }).click();
+  await expect(unfiledGroup.locator(".session-group-items")).toBeHidden();
+  await unfiledGroup.getByRole("button", { name: "Expand folder No folder" }).click();
+  await expect(unfiledGroup.locator(".session-group-items")).toBeVisible();
 });
 
 
